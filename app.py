@@ -214,22 +214,25 @@ with tab_stocks:
             f2.write(f"**ROE:** `{roe_val}`")
 
             # AI Report
-            if api_key:
-    if st.button("🤖 Generate AI Analysis Report"):
-        with st.spinner("AI डेटा प्रोसेस कर रहा है..."):
-            try:
-                client = genai.Client(api_key=api_key.strip())
-                prompt = f"Analyze stock {stk_info['name']} ({active_ticker}). Price: {curr}, Daily: {lbl_d}, Weekly: {lbl_w}, Monthly: {lbl_m}, PE: {pe}, ROE: {roe_val}. Give clear short-term swing levels and long-term advice in concise Hinglish."
-                res = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-                st.markdown(res.text)
-            except Exception as err:
-                st.error(f"API Key अमान्य या इनएक्टिव है। कृपया AI Studio से नई की बनाकर डालें। विवरण: {err}")
-                
+                    # AI Report
+    if api_key:
+        if st.button("🤖 Generate AI Analysis Report"):
+            with st.spinner("AI डेटा प्रोसेस कर रहा है..."):
+                try:
+                    client = genai.Client(api_key=api_key)
+                    prompt = f"Analyze stock {stk_code} based on PE: {pe}, ROE: {roe_val}"
+                    res = client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=prompt
+                    )
+                    st.markdown(res.text)
+                except Exception as err:
+                    st.error(f"API Key अमान्य या इनएक्टिव है: {err}")
 
-# ================= TAB 2: MUTUAL FUNDS =================
-with tab_mf:
-    st.subheader("💼 Indian Mutual Funds (Direct / Regular)")
-    
+    # ============= TAB 2: MUTUAL FUNDS =============
+    with tab_mf:
+        st.subheader("💼 Indian Mutual Funds (Direct / Regular)")
+        
     # Curated Popular Schemes with AMFI Codes
     POPULAR_FUNDS = {
         "Parag Parikh Flexi Cap Fund - Direct": 122639,
