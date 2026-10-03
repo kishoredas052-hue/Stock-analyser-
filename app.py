@@ -54,7 +54,7 @@ if not api_key:
     with st.sidebar:
         st.header("⚙️ Settings")
         api_key = st.text_input("Gemini API Key (Backup):", type="password")
-        st.caption("Tip: Isse Streamlit Settings > Secrets me daal dein taaki bar-bar na dalna pade.")
+        st.caption("Tip: Streamlit Settings > Secrets me GEMINI_API_KEY daal dein.")
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = ["TATAMOTORS.NS", "RELIANCE.NS"]
@@ -144,7 +144,7 @@ with tab_stocks:
                 prev_price = df_daily['Close'].iloc[-2]
                 pct_chg = ((curr_price - prev_price) / prev_price) * 100
                 currency = "$" if not ticker.endswith((".NS", ".BO")) else "₹"
-                sig_d, cls_d = get_signal(df_daily)
+                lbl_d, cls_d = get_signal(df_daily)
 
                 # Modern KPI Card
                 st.markdown(f"""
@@ -186,7 +186,7 @@ with tab_stocks:
                     st.markdown('<div class="timeframe-label">Long (Monthly)</div>', unsafe_allow_html=True)
                     st.markdown(f'<div class="signal-box {cls_m}">{lbl_m}</div>', unsafe_allow_html=True)
 
-                # Professional Interactive Candlestick + Volume Chart
+                # Professional Interactive Candlestick Chart
                 st.markdown("### 📊 Interactive Chart")
                 fig = go.Figure()
                 fig.add_trace(go.Candlestick(
@@ -292,4 +292,4 @@ with tab_watchlist:
             st.rerun()
     else:
         st.write("Aapki watchlist khali hai. Stocks tab me jakar ⭐ Watchlist me Save karein dabayein.")
-                
+    
