@@ -3,7 +3,8 @@ yfinance
 pandas
 ta
 google-genai
-rapidfuzz
 requests
+plotly
+
 
 
