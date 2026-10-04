@@ -680,7 +680,7 @@ with tab_screener:
         ):
             result_df = run_screener(tuple(symbols))
 
-        if result_df.empty:
+                if result_df.empty:
             st.error(
                 "Data fetch nahi ho paya. Thodi der baad dobara Scan karein."
             )
@@ -709,4 +709,27 @@ with tab_screener:
 
             if min_volume > 0:
                 filtered = filtered[
-                    filtered["Volume ×"].notn
+                    filtered["Volume ×"].notna()
+                    & (filtered["Volume ×"] >= min_volume)
+                ]
+
+            if min_roe > 0:
+                filtered = filtered[
+                    filtered["ROE %"].notna()
+                    & (filtered["ROE %"] >= min_roe)
+                ]
+
+            if min_roce > 0:
+                # ROCE is not consistently available from Yahoo.
+                filtered = filtered[
+                    filtered["ROCE %"].notna()
+                    & (filtered["ROCE %"] >= min_roce)
+                ]
+
+            filtered = filtered[
+                filtered["Score"] >= min_score
+            ].reset_index(drop=True)
+
+            st.session_state["last_screener"] = filtered
+            
+                
