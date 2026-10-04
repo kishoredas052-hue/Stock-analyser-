@@ -691,6 +691,7 @@ with tab_screener:
                 "Data fetch nahi ho paya. Thodi der baad dobara Scan karein."
             )
         else:
+                    else:
             filtered = result_df.copy()
 
             if require_44_rising:
@@ -710,4 +711,31 @@ with tab_screener:
             filtered = filtered[
                 filtered["RSI"].notna()
                 & (filtered["RSI"] >= min_rsi)
-         
+                & (filtered["RSI"] <= max_rsi)
+            ]
+
+            if min_volume > 0:
+                filtered = filtered[
+                    filtered["Volume ×"].notna()
+                    & (filtered["Volume ×"] >= min_volume)
+                ]
+
+            if min_roe > 0:
+                filtered = filtered[
+                    filtered["ROE %"].notna()
+                    & (filtered["ROE %"] >= min_roe)
+                ]
+
+            if min_roce > 0:
+                # ROCE is not consistently available from Yahoo.
+                filtered = filtered[
+                    filtered["ROCE %"].notna()
+                    & (filtered["ROCE %"] >= min_roce)
+                ]
+
+            filtered = filtered[
+                filtered["Score"] >= min_score
+            ].reset_index(drop=True)
+
+            st.session_state["last_screener"] = filtered
+
