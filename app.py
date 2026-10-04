@@ -4,17 +4,12 @@ import pandas as pd
 import requests
 import plotly.graph_objects as go
 from ta.momentum import RSIIndicator
+from ta.trend import SMAIndicator
 from google import genai
 
-st.set_page_config(
-    page_title="Pro Investment Terminal v2",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="Pro Financial Dashboard", layout="wide", initial_sidebar_state="collapsed")
 
-# ============================================================
-# CSS
-# ============================================================
+# Sleek Glassmorphism & Dark Fintech CSS
 st.markdown("""
 <style>
 .stApp {
@@ -47,23 +42,10 @@ st.markdown("""
     color: #94a3b8;
     margin-bottom: 4px;
 }
-.score-box {
-    background: linear-gradient(135deg, #172554 0%, #0f172a 100%);
-    border: 1px solid #334155;
-    border-radius: 12px;
-    padding: 14px;
-    text-align: center;
-}
-.small-note {
-    color: #94a3b8;
-    font-size: 12px;
-}
 </style>
 """, unsafe_allow_html=True)
 
-# ============================================================
-# API KEY
-# ============================================================
+# Smart API Key Handling (Secrets first, fallback to sidebar)
 api_key = None
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
@@ -72,663 +54,242 @@ if not api_key:
     with st.sidebar:
         st.header("⚙️ Settings")
         api_key = st.text_input("Gemini API Key (Backup):", type="password")
-        st.caption("Streamlit Settings > Secrets me GEMINI_API_KEY daal sakte hain.")
+        st.caption("Tip: Streamlit Settings > Secrets me GEMINI_API_KEY daal dein.")
 
-# ============================================================
-# SESSION STATE
-# ============================================================
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = ["TATAMOTORS.NS", "RELIANCE.NS"]
 
-# ============================================================
-# FALLBACK UNIVERSES
-# ============================================================
-NIFTY50 = [
-    "ADANIENT.NS", "ADANIPORTS.NS", "APOLLOHOSP.NS", "ASIANPAINT.NS",
-    "AXISBANK.NS", "BAJAJ-AUTO.NS", "BAJFINANCE.NS", "BAJAJFINSV.NS",
-    "BEL.NS", "BHARTIARTL.NS", "CIPLA.NS", "COALINDIA.NS",
-    "DRREDDY.NS", "EICHERMOT.NS", "ETERNAL.NS", "GRASIM.NS",
-    "HCLTECH.NS", "HDFCBANK.NS", "HDFCLIFE.NS", "HEROMOTOCO.NS",
-    "HINDALCO.NS", "HINDUNILVR.NS", "ICICIBANK.NS", "INDUSINDBK.NS",
-    "INFY.NS", "ITC.NS", "JIOFIN.NS", "JSWSTEEL.NS", "KOTAKBANK.NS",
-    "LT.NS", "M&M.NS", "MARUTI.NS", "NESTLEIND.NS", "NTPC.NS",
-    "ONGC.NS", "POWERGRID.NS", "RELIANCE.NS", "SBILIFE.NS",
-    "SBIN.NS", "SHRIRAMFIN.NS", "SUNPHARMA.NS", "TATACONSUM.NS",
-    "TATAMOTORS.NS", "TATASTEEL.NS", "TCS.NS", "TECHM.NS",
-    "TITAN.NS", "TRENT.NS", "ULTRACEMCO.NS", "WIPRO.NS"
-]
-
-# ============================================================
-# DATA FUNCTIONS
-# ============================================================
+# Caching Data for Instant Speed & No Lag
 @st.cache_data(ttl=300)
 def search_symbol(query):
     query = query.strip()
     if not query:
         return None, None
-
-    clean_sym = (
-        query.upper()
-        .replace(" ", "")
-        .replace(".NS", "")
-        .replace(".BO", "")
-    )
-
+    clean_sym = query.upper().replace(" ", "").replace(".NS", "").replace(".BO", "")
     try:
         t = yf.Ticker(f"{clean_sym}.NS")
         hist = t.history(period="5d")
         if not hist.empty:
-            try:
-                name = t.info.get("shortName") or clean_sym
-            except Exception:
-                name = clean_sym
+            name = t.info.get("shortName") or clean_sym
             return f"{clean_sym}.NS", name
     except Exception:
         pass
-
     try:
-        url = (
-            "https://query2.finance.yahoo.com/v1/finance/search"
-            f"?q={query}&quotesCount=6&newsCount=0"
-        )
-        res = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=5
-        ).json()
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=6&newsCount=0"
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
         quotes = res.get("quotes", [])
-
         for q in quotes:
             sym = q.get("symbol", "")
             if sym.endswith(".NS") or sym.endswith(".BO"):
-                return (
-                    sym,
-                    q.get("shortname")
-                    or q.get("longname")
-                    or sym
-                )
-
+                return sym, q.get("shortname") or q.get("longname") or sym
         if quotes:
-            q = quotes[0]
-            return (
-                q.get("symbol"),
-                q.get("shortname")
-                or q.get("longname")
-                or q.get("symbol")
-            )
+            return quotes[0].get("symbol"), quotes[0].get("shortname") or quotes[0].get("longname") or quotes[0].get("symbol")
     except Exception:
         pass
-
     return f"{clean_sym}.NS", clean_sym
-
 
 @st.cache_data(ttl=300)
 def get_stock_data(ticker):
     stock = yf.Ticker(ticker)
     df_daily = stock.history(period="1y", interval="1d")
-
-    try:
-        df_hourly = stock.history(period="7d", interval="1h")
-    except Exception:
-        df_hourly = None
-
-    try:
-        df_weekly = stock.history(period="2y", interval="1wk")
-    except Exception:
-        df_weekly = None
-
-    try:
-        df_monthly = stock.history(period="5y", interval="1mo")
-    except Exception:
-        df_monthly = None
-
-    try:
-        info = stock.info or {}
-    except Exception:
-        info = {}
-
+    try: df_hourly = stock.history(period="7d", interval="1h")
+    except: df_hourly = None
+    try: df_weekly = stock.history(period="2y", interval="1wk")
+    except: df_weekly = None
+    try: df_monthly = stock.history(period="5y", interval="1mo")
+    except: df_monthly = None
+    info = stock.info or {}
     return df_daily, df_hourly, df_weekly, df_monthly, info
 
-
-# ============================================================
-# TECHNICAL ENGINE
-# ============================================================
-def technical_metrics(df):
-    if df is None or df.empty or len(df) < 50:
-        return {}
-
-    close = df["Close"].astype(float)
-    volume = df["Volume"].astype(float) if "Volume" in df else pd.Series(index=df.index, dtype=float)
-
-    sma20 = close.rolling(20).mean()
-    sma44 = close.rolling(44).mean()
-    sma50 = close.rolling(50).mean()
-    sma200 = close.rolling(200).mean()
-
-    rsi = RSIIndicator(close, window=14).rsi()
-
-    avg_vol20 = volume.rolling(20).mean()
-
-    curr = float(close.iloc[-1])
-    sma20_now = float(sma20.iloc[-1]) if pd.notna(sma20.iloc[-1]) else None
-    sma44_now = float(sma44.iloc[-1]) if pd.notna(sma44.iloc[-1]) else None
-    sma50_now = float(sma50.iloc[-1]) if pd.notna(sma50.iloc[-1]) else None
-    sma200_now = float(sma200.iloc[-1]) if pd.notna(sma200.iloc[-1]) else None
-    rsi_now = float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else None
-
-    # Rising = current > 5 sessions ago > 10 sessions ago
-    sma44_rising = False
-    if len(sma44.dropna()) >= 11:
-        sma44_rising = (
-            sma44.iloc[-1] > sma44.iloc[-5] >
-            sma44.iloc[-10]
-        )
-
-    volume_ratio = None
-    if pd.notna(avg_vol20.iloc[-1]) and avg_vol20.iloc[-1] > 0:
-        volume_ratio = float(volume.iloc[-1] / avg_vol20.iloc[-1])
-
-    high_52w = float(close.max())
-    low_52w = float(close.min())
-    from_52w_high = ((curr / high_52w) - 1) * 100 if high_52w else None
-
-    ret_1m = ((curr / close.iloc[-22]) - 1) * 100 if len(close) >= 22 else None
-    ret_3m = ((curr / close.iloc[-66]) - 1) * 100 if len(close) >= 66 else None
-    ret_6m = ((curr / close.iloc[-126]) - 1) * 100 if len(close) >= 126 else None
-
-    return {
-        "price": curr,
-        "sma20": sma20_now,
-        "sma44": sma44_now,
-        "sma50": sma50_now,
-        "sma200": sma200_now,
-        "sma44_rising": sma44_rising,
-        "rsi": rsi_now,
-        "volume_ratio": volume_ratio,
-        "high_52w": high_52w,
-        "low_52w": low_52w,
-        "from_52w_high": from_52w_high,
-        "ret_1m": ret_1m,
-        "ret_3m": ret_3m,
-        "ret_6m": ret_6m,
-    }
-
-
 def get_signal(df):
-    m = technical_metrics(df)
-
-    if not m or m.get("rsi") is None:
+    if df is None or len(df) < 14:
         return "Neutral →", "neutral"
-
-    curr = m["price"]
-    rsi = m["rsi"]
-    sma20 = m["sma20"]
-    sma50 = m["sma50"]
-    sma44 = m["sma44"]
-
-    score = 0
-
-    # Trend gets priority.
-    if sma44 and curr > sma44:
-        score += 2
-    else:
-        score -= 2
-
-    if sma50 and curr > sma50:
-        score += 2
-    else:
-        score -= 2
-
-    if sma20 and curr > sma20:
-        score += 1
-    else:
-        score -= 1
-
-    # Rising 44 SMA is a positive confirmation.
-    if m["sma44_rising"]:
-        score += 2
-
-    # Avoid treating every oversold stock as an automatic buy.
-    if 50 <= rsi <= 68:
-        score += 1
-    elif rsi > 75:
-        score -= 1
-    elif rsi < 30 and m["sma44_rising"]:
-        score += 1
-
-    if score >= 5:
-        return "Strong Buy ↗", "strong-buy"
-    elif score >= 2:
-        return "Buy ↗", "buy"
-    elif score <= -5:
-        return "Strong Sell ↘", "strong-sell"
-    elif score <= -2:
-        return "Sell ↘", "sell"
-
+    close = df['Close']
+    curr = close.iloc[-1]
+    rsi = RSIIndicator(close, window=14).rsi().iloc[-1]
+    sma20 = SMAIndicator(close, window=20).sma_indicator().iloc[-1] if len(close) >= 20 else curr
+    sma50 = SMAIndicator(close, window=50).sma_indicator().iloc[-1] if len(close) >= 50 else sma20
+    buy, sell = 0, 0
+    if rsi < 35: buy += 2
+    elif rsi < 45: buy += 1
+    elif rsi > 70: sell += 2
+    elif rsi > 55: sell += 1
+    if curr > sma20: buy += 1
+    else: sell += 1
+    if curr > sma50: buy += 2
+    else: sell += 2
+    score = buy - sell
+    if score >= 3: return "Strong Buy ↗", "strong-buy"
+    elif score >= 1: return "Buy ↗", "buy"
+    elif score <= -3: return "Strong Sell ↘", "strong-sell"
+    elif score <= -1: return "Sell ↘", "sell"
     return "Neutral →", "neutral"
 
+st.title("⚡ Pro Investment Terminal")
 
-# ============================================================
-# FUNDAMENTAL + SCORE ENGINE
-# ============================================================
-def safe_pct(value):
-    if isinstance(value, (int, float)) and pd.notna(value):
-        return value * 100
-    return None
+tab_stocks, tab_mf, tab_watchlist = st.tabs(["📈 Stocks (NSE & Global)", "💼 Mutual Funds", "⭐ Watchlist"])
 
+# ================= TAB 1: STOCKS =================
+with tab_stocks:
+    search_query = st.text_input("🔍 Search Any Stock:", value="TATAMOTORS", placeholder="e.g. jk paper, sbc exports, reliance, apple, tsla...")
 
-def fundamental_values(info):
-    roe = safe_pct(info.get("returnOnEquity"))
-    roce = safe_pct(info.get("returnOnCapitalEmployed"))
+    if search_query:
+        ticker, company_name = search_symbol(search_query)
+        if ticker:
+            with st.spinner("Loading market data..."):
+                df_daily, df_hourly, df_weekly, df_monthly, info = get_stock_data(ticker)
 
-    # Yahoo does not provide ROCE consistently. Keep it optional.
-    debt_equity = info.get("debtToEquity")
-    profit_growth = safe_pct(info.get("earningsGrowth"))
-    revenue_growth = safe_pct(info.get("revenueGrowth"))
+            if not df_daily.empty and len(df_daily) > 1:
+                curr_price = df_daily['Close'].iloc[-1]
+                prev_price = df_daily['Close'].iloc[-2]
+                pct_chg = ((curr_price - prev_price) / prev_price) * 100
+                currency = "$" if not ticker.endswith((".NS", ".BO")) else "₹"
+                lbl_d, cls_d = get_signal(df_daily)
 
-    pe = info.get("trailingPE")
-    if pe is None:
-        pe = info.get("forwardPE")
+                # Modern KPI Card
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div style="font-size:22px; font-weight:800;">{company_name} <span style="font-size:14px; color:#94a3b8;">({ticker})</span></div>
+                    <div style="margin-top:4px;">
+                        <span style="font-size:28px; font-weight:800;">{currency}{curr_price:.2f}</span>
+                        <span style="color:{'#22c55e' if pct_chg>=0 else '#ef4444'}; font-size:16px; font-weight:700;"> ({pct_chg:+.2f}%)</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
-    return {
-        "pe": pe,
-        "roe": roe,
-        "roce": roce,
-        "debt_equity": debt_equity,
-        "profit_growth": profit_growth,
-        "revenue_growth": revenue_growth,
-    }
+                col_btn, _ = st.columns([2, 3])
+                with col_btn:
+                    if st.button("⭐ Watchlist me Save karein"):
+                        if ticker not in st.session_state.watchlist:
+                            st.session_state.watchlist.append(ticker)
+                            st.success("Watchlist me add ho gaya!")
+                        else:
+                            st.info("Already watchlist me hai.")
 
+                # Multi-Timeframe Signal Cards
+                lbl_h, cls_h = get_signal(df_hourly if df_hourly is not None and not df_hourly.empty else df_daily.tail(30))
+                lbl_w, cls_w = get_signal(df_weekly if df_weekly is not None and not df_weekly.empty else df_daily)
+                lbl_m, cls_m = get_signal(df_monthly if df_monthly is not None and not df_monthly.empty else df_daily)
 
-def calculate_score(tm, fm):
-    """
-    Score = 100
-    Technical: 50
-    Fundamental: 30
-    Momentum: 20
-    """
-    if not tm:
-        return 0, []
+                st.markdown("### ⏱️ Technical Verdict by Timeframe")
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.markdown('<div class="timeframe-label">Short (Hourly)</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="signal-box {cls_h}">{lbl_h}</div>', unsafe_allow_html=True)
+                with c2:
+                    st.markdown('<div class="timeframe-label">Short (Daily)</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="signal-box {cls_d}">{lbl_d}</div>', unsafe_allow_html=True)
+                with c3:
+                    st.markdown('<div class="timeframe-label">Medium (Weekly)</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="signal-box {cls_w}">{lbl_w}</div>', unsafe_allow_html=True)
+                with c4:
+                    st.markdown('<div class="timeframe-label">Long (Monthly)</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="signal-box {cls_m}">{lbl_m}</div>', unsafe_allow_html=True)
 
-    score = 0
-    reasons = []
-
-    # ---------------- TECHNICAL 50 ----------------
-    if tm["sma44_rising"]:
-        score += 15
-        reasons.append("44 SMA Rising")
-
-    if tm["sma44"] and tm["price"] > tm["sma44"]:
-        score += 10
-        reasons.append("Price > 44 SMA")
-
-    if tm["sma200"] and tm["price"] > tm["sma200"]:
-        score += 10
-        reasons.append("Price > 200 SMA")
-
-    if tm["rsi"] is not None and 50 <= tm["rsi"] <= 70:
-        score += 5
-        reasons.append("RSI 50–70")
-
-    if tm["volume_ratio"] is not None and tm["volume_ratio"] >= 1.2:
-        score += 5
-        reasons.append("Volume > 20D Avg")
-
-    if tm["from_52w_high"] is not None and tm["from_52w_high"] >= -10:
-        score += 5
-        reasons.append("Near 52W High")
-
-    # ---------------- FUNDAMENTAL 30 ----------------
-    if fm["roe"] is not None and fm["roe"] >= 15:
-        score += 10
-        reasons.append("ROE > 15%")
-
-    if fm["roce"] is not None and fm["roce"] >= 15:
-        score += 10
-        reasons.append("ROCE > 15%")
-
-    if fm["debt_equity"] is not None and fm["debt_equity"] <= 100:
-        score += 5
-        reasons.append("Debt/Equity controlled")
-
-    if fm["profit_growth"] is not None and fm["profit_growth"] >= 10:
-        score += 5
-        reasons.append("Profit growth > 10%")
-
-    # ---------------- MOMENTUM 20 ----------------
-    for key, points, label in [
-        ("ret_1m", 5, "1M positive momentum"),
-        ("ret_3m", 5, "3M positive momentum"),
-        ("ret_6m", 5, "6M positive momentum"),
-    ]:
-        if tm.get(key) is not None and tm[key] > 0:
-            score += points
-            reasons.append(label)
-
-    if tm["from_52w_high"] is not None and tm["from_52w_high"] >= -5:
-        score += 5
-        reasons.append("Within 5% of 52W High")
-
-    return min(score, 100), reasons
-
-
-def score_label(score):
-    if score >= 90:
-        return "🔥 Exceptional"
-    if score >= 80:
-        return "🟢 Strong"
-    if score >= 70:
-        return "🟡 Good"
-    if score >= 60:
-        return "⚪ Average"
-    return "🔴 Weak"
-
-
-# ============================================================
-# NIFTY UNIVERSE
-# ============================================================
-@st.cache_data(ttl=86400)
-def get_nifty100_symbols():
-    urls = [
-        "https://www.niftyindices.com/IndexConstituent/ind_nifty100list.csv",
-        "https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv",
-    ]
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "text/csv,*/*",
-        "Referer": "https://www.niftyindices.com/"
-    }
-
-    for url in urls:
-        try:
-            r = requests.get(url, headers=headers, timeout=10)
-            if r.ok and len(r.content) > 100:
-                from io import StringIO
-                df = pd.read_csv(StringIO(r.text))
-                col = next(
-                    (c for c in df.columns if "Symbol" in c),
-                    None
+                # Professional Interactive Candlestick Chart
+                st.markdown("### 📊 Interactive Chart")
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(
+                    x=df_daily.index,
+                    open=df_daily['Open'],
+                    high=df_daily['High'],
+                    low=df_daily['Low'],
+                    close=df_daily['Close'],
+                    name="Candlestick"
+                ))
+                fig.update_layout(
+                    template="plotly_dark",
+                    paper_bgcolor="#0b0f19",
+                    plot_bgcolor="#0f172a",
+                    xaxis_rangeslider_visible=False,
+                    height=380,
+                    margin=dict(l=10, r=10, t=10, b=10)
                 )
-                if col:
-                    syms = [
-                        f"{str(x).strip()}.NS"
-                        for x in df[col].dropna().tolist()
-                    ]
-                    if syms:
-                        return syms
-        except Exception:
-            pass
+                st.plotly_chart(fig, use_container_width=True)
 
-    return NIFTY50
+                # Fundamentals
+                pe = info.get('trailingPE') or info.get('forwardPE') or "N/A"
+                roe = info.get('returnOnEquity')
+                roe_val = f"{roe * 100:.2f}%" if isinstance(roe, (int, float)) else "N/A"
+                mcap = info.get('marketCap')
+                mcap_str = f"₹{mcap/10000000:.0f} Cr" if isinstance(mcap, (int, float)) else "N/A"
 
+                st.markdown("### 🏢 Valuation & Health")
+                f1, f2, f3 = st.columns(3)
+                f1.metric("P/E Ratio", f"{pe if isinstance(pe, str) else round(pe, 2)}")
+                f2.metric("ROE", f"{roe_val}")
+                f3.metric("Market Cap", f"{mcap_str}")
 
-# ============================================================
-# SCREENER
-# ============================================================
-@st.cache_data(ttl=300)
-def run_screener(symbols):
-    rows = []
+                # AI Assistant Section
+                st.write("---")
+                st.markdown("### 🤖 AI Financial Analyst")
+                if api_key:
+                    if st.button("✨ Generate AI Analysis Report"):
+                        with st.spinner("AI report tayar kar raha hai..."):
+                            try:
+                                client = genai.Client(api_key=api_key.strip())
+                                prompt = f"""
+                                Analyze {company_name} ({ticker}):
+                                Price: {currency}{curr_price:.2f} ({pct_chg:+.2f}%)
+                                Technicals: Hourly: {lbl_h}, Daily: {lbl_d}, Weekly: {lbl_w}, Monthly: {lbl_m}
+                                Fundamentals: P/E: {pe}, ROE: {roe_val}, MCap: {mcap_str}
 
-    for ticker in symbols:
-        try:
-            df = yf.download(
-                ticker,
-                period="1y",
-                interval="1d",
-                auto_adjust=False,
-                progress=False,
-                threads=False
-            )
+                                Provide a clear, actionable report in concise Hinglish:
+                                1. Short-Term Swing: Entry zones, Stop-Loss, Target.
+                                2. Long-Term Value: Fair price, Accumulation strategy.
+                                3. Final Take: Immediate action.
+                                """
+                                res = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                                st.markdown(res.text)
+                            except Exception as err:
+                                st.error(f"AI Error: {err}. API key check karein.")
+                else:
+                    st.info("💡 AI report ke liye sidebar me API key dalein ya Streamlit Secrets me GEMINI_API_KEY set karein.")
+            else:
+                st.warning("Data fetch nahi ho paya. Kripya dusra symbol check karein.")
 
-            if df is None or df.empty:
-                continue
-
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
-            if len(df) < 50:
-                continue
-
-            tm = technical_metrics(df)
-
+# ================= TAB 2: MUTUAL FUNDS =================
+with tab_mf:
+    st.subheader("💼 Indian Mutual Funds (Direct / Regular)")
+    POPULAR_FUNDS = {
+        "Parag Parikh Flexi Cap Fund - Direct": 122639,
+        "Nippon India Small Cap Fund - Direct": 118778,
+        "Quant Small Cap Fund - Direct": 120828,
+        "HDFC Mid-Cap Opportunities Fund - Direct": 118989,
+        "SBI Bluechip Fund - Direct": 119598
+    }
+    selected_mf = st.selectbox("Popular Schemes:", list(POPULAR_FUNDS.keys()))
+    if st.button("📊 Fetch Fund NAV"):
+        with st.spinner("Fetching AMFI NAV..."):
             try:
-                info = yf.Ticker(ticker).info or {}
-            except Exception:
-                info = {}
+                code = POPULAR_FUNDS[selected_mf]
+                res = requests.get(f"https://api.mfapi.in/mf/{code}", timeout=6).json()
+                meta = res.get("meta", {})
+                data = res.get("data", [])
+                if data:
+                    c_nav = float(data[0]["nav"])
+                    p_nav = float(data[1]["nav"])
+                    chg_nav = ((c_nav - p_nav) / p_nav) * 100
+                    st.metric("Current NAV", f"₹{c_nav:.2f}", f"{chg_nav:+.2f}%")
+                    st.write(f"**Fund House:** {meta.get('fund_house')}")
+                    st.write(f"**Category:** {meta.get('scheme_category')}")
+                    
+                    df_nav = pd.DataFrame(data[:365])
+                    df_nav["date"] = pd.to_datetime(df_nav["date"], format="%d-%m-%Y")
+                    df_nav["nav"] = df_nav["nav"].astype(float)
+                    st.line_chart(df_nav.sort_values("date").set_index("date")["nav"])
+            except Exception as ex:
+                st.error(f"Error: {ex}")
 
-            fm = fundamental_values(info)
-            score, reasons = calculate_score(tm, fm)
-
-            rows.append({
-                "Stock": ticker.replace(".NS", ""),
-                "Ticker": ticker,
-                "Price": tm.get("price"),
-                "RSI": tm.get("rsi"),
-                "44 SMA": tm.get("sma44"),
-                "44 SMA Rising": "✅" if tm.get("sma44_rising") else "❌",
-                "200 SMA": tm.get("sma200"),
-                "Volume ×": tm.get("volume_ratio"),
-                "1M %": tm.get("ret_1m"),
-                "3M %": tm.get("ret_3m"),
-                "6M %": tm.get("ret_6m"),
-                "ROE %": fm.get("roe"),
-                "ROCE %": fm.get("roce"),
-                "D/E": fm.get("debt_equity"),
-                "P/E": fm.get("pe"),
-                "Score": score,
-                "Rating": score_label(score),
-                "Reasons": ", ".join(reasons[:8])
-            })
-
-        except Exception:
-            continue
-
-    if not rows:
-        return pd.DataFrame()
-
-    return (
-        pd.DataFrame(rows)
-        .sort_values(["Score", "RSI"], ascending=[False, False])
-        .reset_index(drop=True)
-    )
-
-
-# ============================================================
-# APP
-# ============================================================
-st.title("⚡ Pro Investment Terminal v2")
-
-tab_screener, tab_stocks, tab_mf, tab_watchlist = st.tabs([
-    "🔎 Stock Screener",
-    "📈 Stock Analysis",
-    "💼 Mutual Funds",
-    "⭐ Watchlist"
-])
-
-# ============================================================
-# TAB 0: SCREENER
-# ============================================================
-with tab_screener:
-    st.subheader("🔎 Smart Stock Screener")
-    st.caption(
-        "Technical + Fundamental + Momentum scoring. "
-        "Score maximum 100."
-    )
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        universe = st.selectbox(
-            "Universe",
-            ["NIFTY 50", "NIFTY 100"],
-            index=0
-        )
-
-    with col2:
-        preset = st.selectbox(
-            "Preset",
-            [
-                "Custom",
-                "🚀 Momentum",
-                "📈 44 SMA Rising",
-                "🔥 Breakout",
-                "🏆 Quality",
-                "💎 Value / Quality"
-            ]
-        )
-
-    with col3:
-        min_score = st.slider(
-            "Minimum Score",
-            min_value=0,
-            max_value=100,
-            value=60,
-            step=5
-        )
-
-    with st.expander("⚙️ Advanced Filters", expanded=True):
-        a1, a2, a3, a4 = st.columns(4)
-
-        with a1:
-            require_44_rising = st.checkbox(
-                "44 SMA Rising",
-                value=(preset in ["📈 44 SMA Rising", "🚀 Momentum", "🔥 Breakout"])
-            )
-            price_above_44 = st.checkbox(
-                "Price > 44 SMA",
-                value=True
-            )
-
-        with a2:
-            require_200 = st.checkbox(
-                "Price > 200 SMA",
-                value=(preset != "💎 Value / Quality")
-            )
-            min_rsi = st.number_input(
-                "RSI minimum",
-                min_value=0,
-                max_value=100,
-                value=50
-            )
-
-        with a3:
-            max_rsi = st.number_input(
-                "RSI maximum",
-                min_value=0,
-                max_value=100,
-                value=70
-            )
-            min_volume = st.number_input(
-                "Min Volume × 20D Avg",
-                min_value=0.0,
-                max_value=10.0,
-                value=1.0,
-                step=0.1
-            )
-
-        with a4:
-            min_roe = st.number_input(
-                "Min ROE %",
-                min_value=-100.0,
-                max_value=200.0,
-                value=0.0,
-                step=1.0
-            )
-            min_roce = st.number_input(
-                "Min ROCE %",
-                min_value=-100.0,
-                max_value=200.0,
-                value=0.0,
-                step=1.0
-            )
-
-    if preset == "🏆 Quality":
-        min_roe = max(min_roe, 15)
-        min_roce = max(min_roce, 15)
-
-    if preset == "🚀 Momentum":
-        min_rsi = max(min_rsi, 50)
-        max_rsi = min(max_rsi, 70)
-        min_volume = max(min_volume, 1.2)
-
-    if preset == "🔥 Breakout":
-        min_rsi = max(min_rsi, 55)
-        min_volume = max(min_volume, 1.5)
-
-    if preset == "📈 44 SMA Rising":
-        require_44_rising = True
-        price_above_44 = True
-
-    if preset == "💎 Value / Quality":
-        min_roe = max(min_roe, 15)
-        min_roce = max(min_roce, 15)
-        require_200 = False
-
-    scan_clicked = st.button(
-        "🔍 SCAN STOCKS",
-        type="primary",
-        use_container_width=True
-    )
-
-    if scan_clicked:
-        symbols = NIFTY50 if universe == "NIFTY 50" else get_nifty100_symbols()
-
-        with st.spinner(
-            f"Scanning {len(symbols)} stocks... "
-            "Yahoo Finance se data aa raha hai."
-        ):
-            result_df = run_screener(tuple(symbols))
-
-                if result_df.empty:st.error(
-                "Data fetch nahi ho paya. Thodi der baad dobara Scan karein."
-            )
-        else:
-            filtered = result_df.copy()
-
-            if require_44_rising:
-                filtered = filtered[filtered["44 SMA Rising"] == "✅"]
-
-            if price_above_44:
-                filtered = filtered[
-                    filtered["Price"] > filtered["44 SMA"]
-                ]
-
-            if require_200:
-                filtered = filtered[
-                    filtered["200 SMA"].notna()
-                    & (filtered["Price"] > filtered["200 SMA"])
-                ]
-
-            filtered = filtered[
-                filtered["RSI"].notna()
-                & (filtered["RSI"] >= min_rsi)
-                & (filtered["RSI"] <= max_rsi)
-            ]
-
-            if min_volume > 0:
-                filtered = filtered[
-                    filtered["Volume ×"].notna()
-                    & (filtered["Volume ×"] >= min_volume)
-                ]
-
-            if min_roe > 0:
-                filtered = filtered[
-                    filtered["ROE %"].notna()
-                    & (filtered["ROE %"] >= min_roe)
-                ]
-
-            if min_roce > 0:
-                # ROCE is not consistently available from Yahoo.
-                filtered = filtered[
-                    filtered["ROCE %"].notna()
-                    & (filtered["ROCE %"] >= min_roce)
-                ]
-
-            filtered = filtered[
-                filtered["Score"] >= min_score
-            ].reset_index(drop=True)
-
-            st.session_state["last_screener"] = filtered
-            
-                
+# ================= TAB 3: WATCHLIST =================
+with tab_watchlist:
+    st.subheader("⭐ Saved Watchlist")
+    if st.session_state.watchlist:
+        for sym in st.session_state.watchlist:
+            st.info(f"📌 **{sym}**")
+        if st.button("Clear Watchlist"):
+            st.session_state.watchlist = []
+            st.rerun()
+    else:
+        st.write("Aapki watchlist khali hai. Stocks tab me jakar ⭐ Watchlist me Save karein dabayein.")
+        
