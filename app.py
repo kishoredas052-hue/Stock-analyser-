@@ -680,8 +680,7 @@ with tab_screener:
         ):
             result_df = run_screener(tuple(symbols))
 
-                if result_df.empty:
-            st.error(
+                if result_df.empty:st.error(
                 "Data fetch nahi ho paya. Thodi der baad dobara Scan karein."
             )
         else:
