@@ -220,7 +220,7 @@ def gauge(score_val, verdict):
                 {"range": [-1, 1], "color": "#64748b"}, {"range": [1, 3], "color": "#22c55e"},
                 {"range": [3, 5], "color": "#15803d"}],
         }))
-    fig.update_layout(height=240, margin=dict(l=25, r=25, t=60, b=0),
+        fig.update_layout(height=270, margin=dict(l=45, r=45, t=70, b=35),
                       paper_bgcolor="rgba(0,0,0,0)", font={"color": "#e2e8f0"})
     return fig
 
@@ -391,7 +391,8 @@ with tab1:
             st.markdown(lights(daily, tfv))
             with st.container(border=True):
                 st.markdown("**📍 Important levels** (agar buy karna ho to, ye idea hai, advice nahi)")
-                st.markdown(levels_table(daily, cur))
+                                if sc["verdict"] in ("Sell", "Strong Sell"):
+                    st.warning("⚠️ Trend kamzor hai. Ye levels tabhi dekho jab trend palatne ka signal mile, abhi buy ka signal nahi hai.")
 
             st.subheader("⏱ Timeframe wise Verdict")
             cols = st.columns(2) + st.columns(2)
