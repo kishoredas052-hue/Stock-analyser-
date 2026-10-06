@@ -220,7 +220,7 @@ def gauge(score_val, verdict):
                 {"range": [-1, 1], "color": "#64748b"}, {"range": [1, 3], "color": "#22c55e"},
                 {"range": [3, 5], "color": "#15803d"}],
         }))
-        fig.update_layout(height=270, margin=dict(l=45, r=45, t=70, b=35),
+    fig.update_layout(height=270, margin=dict(l=45, r=45, t=70, b=35),
                       paper_bgcolor="rgba(0,0,0,0)", font={"color": "#e2e8f0"})
     return fig
 
