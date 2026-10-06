@@ -391,7 +391,9 @@ with tab1:
             st.markdown(lights(daily, tfv))
             with st.container(border=True):
                 st.markdown("**📍 Important levels** (agar buy karna ho to, ye idea hai, advice nahi)")
-                                if sc["verdict"] in ("Sell", "Strong Sell"):
+                st.markdown(levels_table(daily, cur))
+                
+                if sc["verdict"] in ("Sell", "Strong Sell"):
                     st.warning("⚠️ Trend kamzor hai. Ye levels tabhi dekho jab trend palatne ka signal mile, abhi buy ka signal nahi hai.")
 
             st.subheader("⏱ Timeframe wise Verdict")
