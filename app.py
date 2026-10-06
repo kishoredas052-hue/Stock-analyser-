@@ -172,18 +172,19 @@ def esc(text: str) -> str:
     return text.replace("$", "\\$")
 
 
-def summary_hi(df, sc, cur) -> str:
+def summary_hl(df, sc, cur) -> str:
     cur = esc(cur)
     l = df.iloc[-1]
-    trend = "Bullish (तेजी)" if l["Close"] > l["SMA50"] else "Bearish (मंदी)"
+    trend = "Bullish (tezi)" if l["Close"] > l["SMA50"] else "Bearish (mandi)"
     rsi = l["RSI"]
-    mom = "Oversold" if rsi < 30 else "Overbought" if rsi > 70 else "Neutral (संतुलित)"
+    mom = ("Oversold (bohot gira hua)" if rsi < 30
+           else "Overbought (bohot chadha hua)" if rsi > 70 else "Neutral (normal)")
     return (
-        f"1. **ट्रेंड:** स्टॉक अभी {trend} है (SMA50: {cur}{l['SMA50']:.2f})\n\n"
-        f"2. **मोमेंटम (RSI):** {rsi:.1f} → {mom}\n\n"
-        f"3. **सपोर्ट/रेजिस्टेंस:** 20-दिन का निचला स्तर {cur}{df['Low'].tail(20).min():.2f}, "
-        f"ऊपरी स्तर {cur}{df['High'].tail(20).max():.2f}\n\n"
-        f"4. **वोलैटिलिटी (ATR):** {cur}{l['ATR']:.2f} प्रति कैंडल\n\n"
+        f"1. **Trend:** Stock abhi {trend} hai (SMA50: {cur}{l['SMA50']:.2f})\n\n"
+        f"2. **Momentum (RSI):** {rsi:.1f} → {mom}\n\n"
+        f"3. **Support/Resistance:** 20 din ka low {cur}{df['Low'].tail(20).min():.2f}, "
+        f"high {cur}{df['High'].tail(20).max():.2f}\n\n"
+        f"4. **Uthal-puthal (ATR):** {cur}{l['ATR']:.2f} per candle\n\n"
         f"**Verdict:** {sc['verdict']} (score {sc['score']:+.1f})"
     )
 
@@ -203,6 +204,87 @@ def price_chart(df, name, days, style):
                       margin=dict(l=0, r=0, t=10, b=0), legend=dict(orientation="h"),
                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
     return fig
+
+
+def gauge(score_val, verdict):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number", value=score_val,
+        number={"font": {"size": 34}, "valueformat": "+.0f"},
+        title={"text": verdict, "font": {"size": 22}},
+        gauge={
+            "axis": {"range": [-5, 5], "tickvals": [-5, 0, 5],
+                     "ticktext": ["Sell", "Neutral", "Buy"]},
+            "bar": {"color": "#e2e8f0", "thickness": 0.25},
+            "steps": [
+                {"range": [-5, -3], "color": "#b91c1c"}, {"range": [-3, -1], "color": "#ef4444"},
+                {"range": [-1, 1], "color": "#64748b"}, {"range": [1, 3], "color": "#22c55e"},
+                {"range": [3, 5], "color": "#15803d"}],
+        }))
+    fig.update_layout(height=240, margin=dict(l=25, r=25, t=60, b=0),
+                      paper_bgcolor="rgba(0,0,0,0)", font={"color": "#e2e8f0"})
+    return fig
+
+
+def plain_line(df, sc, tfv) -> str:
+    v, rsi = sc["verdict"], df.iloc[-1]["RSI"]
+    if v in ("Strong Buy", "Buy"):
+        s = "Trend majboot hai. Dip aane par buy karna ek option hai, par stop-loss zaroor rakho."
+    elif v == "Neutral":
+        s = "Abhi direction clear nahi hai. Breakout ka wait karna better rahega."
+    else:
+        s = "Trend kamzor hai. Abhi naya buy risky hai; support hold hone ya trend palatne ka wait karo."
+    if rsi < 30 and v in ("Sell", "Strong Sell", "Neutral"):
+        s += " Lekin RSI oversold hai, isliye chhota bounce aa sakta hai."
+    if rsi > 70 and v in ("Buy", "Strong Buy"):
+        s += " Par RSI overbought hai, isliye naye buy me jaldi mat karo."
+    vals = set(tfv.values())
+    if vals & {"Buy", "Strong Buy"} and vals & {"Sell", "Strong Sell"}:
+        s += " Alag-alag timeframe ke signal mix hain, isliye short aur long term ka plan alag rakho."
+    return s
+
+
+def lights(df, tfv) -> str:
+    l = df.iloc[-1]
+    p = l["Close"]
+    n = int(p > l["SMA50"]) + int(p > (l["SMA200"] if not np.isnan(l["SMA200"]) else l["SMA50"]))
+    rows = []
+    rows.append({2: "🟢 **Trend:** upar hai (price dono average ke upar)",
+                 1: "🟡 **Trend:** mixed hai (ek average ke upar, ek ke neeche)",
+                 0: "🔴 **Trend:** neeche hai (price dono average ke neeche)"}[n])
+    rows.append("🟢 **Momentum:** bullish (MACD upar)" if l["MACD"] > l["MACD_SIG"]
+                else "🔴 **Momentum:** bearish (MACD neeche)")
+    r = l["RSI"]
+    rows.append(f"🟢 **RSI {r:.0f}:** oversold, bohot gira hua, bounce ho sakta hai" if r < 30
+                else f"🔴 **RSI {r:.0f}:** overbought, bohot chadha hua, correction ka risk" if r > 70
+                else f"🟡 **RSI {r:.0f}:** normal zone")
+    ap = l["ATR"] / p * 100
+    rows.append(f"🟢 **Uthal-puthal:** kam ({ap:.1f}% per candle)" if ap < 1.5
+                else f"🟡 **Uthal-puthal:** medium ({ap:.1f}% per candle)" if ap < 3
+                else f"🔴 **Uthal-puthal:** zyada ({ap:.1f}% per candle)")
+    if tfv:
+        b = sum(v in ("Buy", "Strong Buy") for v in tfv.values())
+        s_ = sum(v in ("Sell", "Strong Sell") for v in tfv.values())
+        icon = "🟢" if b > s_ else "🔴" if s_ > b else "🟡"
+        rows.append(f"{icon} **Timeframes:** {len(tfv)} me se {b} Buy, {s_} Sell, baaki Neutral")
+    return "\n".join(f"- {r}" for r in rows)
+
+
+def levels_table(df, cur) -> str:
+    cur = esc(cur)
+    l = df.iloc[-1]
+    price, atr = l["Close"], l["ATR"]
+    sup, res = df["Low"].tail(20).min(), df["High"].tail(20).max()
+    sl = price - 1.5 * atr
+    tgt = max(res, price + 2 * atr) if res > price else price + 2 * atr
+    rr = (tgt - price) / (price - sl)
+    return (
+        "| Level | Price | Matlab |\n|---|---|---|\n"
+        f"| 🛡 Support | {cur}{sup:.2f} | Yahan tak gira to buyers aa sakte hain |\n"
+        f"| 🚧 Resistance | {cur}{res:.2f} | Yahan upar rukawat aa sakti hai |\n"
+        f"| ⛔ Stop-loss idea | {cur}{sl:.2f} | Isse neeche gira to nikal jao (1.5×ATR) |\n"
+        f"| 🎯 Target idea | {cur}{tgt:.2f} | Pehla target |\n"
+        f"| ⚖ Risk:Reward | 1 : {rr:.1f} | 1 se zyada ho to behtar |"
+    )
 
 
 # ---------- WALLPAPER ----------
@@ -294,16 +376,33 @@ with tab1:
                     st.session_state.watchlist.append(symbol)
                 st.toast("Saved!")
 
-            st.subheader("⏱ Technical Verdict by Timeframe")
-            cols = st.columns(2) + st.columns(2)
-            for col, (label, (itv, per)) in zip(cols, TIMEFRAMES.items()):
+            sc = score(daily)
+            tfv = {}
+            for label, (itv, per) in TIMEFRAMES.items():
                 tf = load(symbol, itv, per)
-                with col:
-                    if tf is None or len(tf) < 55:
-                        st.caption(f"{label}: data kam hai")
-                    else:
-                        badge(label, score(add_indicators(tf))["verdict"])
+                if tf is not None and len(tf) >= 55:
+                    tfv[label] = score(add_indicators(tf))["verdict"]
 
+            # ---- QUICK VIEW ----
+            st.subheader("⚡ Quick View (30 second me samjho)")
+            st.plotly_chart(gauge(sc["score"], sc["verdict"]),
+                            use_container_width=True, config={"staticPlot": True})
+            st.info(plain_line(daily, sc, tfv))
+            st.markdown(lights(daily, tfv))
+            with st.container(border=True):
+                st.markdown("**📍 Important levels** (agar buy karna ho to, ye idea hai, advice nahi)")
+                st.markdown(levels_table(daily, cur))
+
+            st.subheader("⏱ Timeframe wise Verdict")
+            cols = st.columns(2) + st.columns(2)
+            for col, label in zip(cols, TIMEFRAMES):
+                with col:
+                    if label in tfv:
+                        badge(label, tfv[label])
+                    else:
+                        st.caption(f"{label}: data kam hai")
+
+            # ---- CHART ----
             r1, r2 = st.columns(2)
             rng = r1.radio("Range", ["1M", "3M", "6M", "1Y"], index=2, horizontal=True)
             style = r2.radio("Chart", ["Line", "Candle"], horizontal=True)
@@ -313,23 +412,39 @@ with tab1:
             st.plotly_chart(price_chart(daily, symbol, days, style),
                             use_container_width=True, config=cfg)
 
+            # ---- DETAILS (collapsed, jise padhna ho wo khole) ----
             lv = daily.iloc[-1]
             hi52, lo52 = daily["High"].tail(252).max(), daily["Low"].tail(252).min()
-            k1, k2 = st.columns(2)
-            k1.metric("52W High", f"{cur}{hi52:,.2f}", f"{(price / hi52 - 1) * 100:.1f}%")
-            k2.metric("52W Low", f"{cur}{lo52:,.2f}", f"{(price / lo52 - 1) * 100:+.1f}%")
-            k3, k4 = st.columns(2)
-            k3.metric("RSI (14)", f"{lv['RSI']:.1f}")
-            k4.metric("ATR", f"{cur}{lv['ATR']:.2f}")
+            with st.expander("🔢 Aur numbers (52W High/Low, RSI, ATR)"):
+                k1, k2 = st.columns(2)
+                k1.metric("52W High", f"{cur}{hi52:,.2f}", f"{(price / hi52 - 1) * 100:.1f}%",
+                          help="Pichle 1 saal ka sabse ucha price. % = abhi ke price se kitna neeche.")
+                k2.metric("52W Low", f"{cur}{lo52:,.2f}", f"{(price / lo52 - 1) * 100:+.1f}%",
+                          help="Pichle 1 saal ka sabse neecha price.")
+                k3, k4 = st.columns(2)
+                k3.metric("RSI (14)", f"{lv['RSI']:.1f}",
+                          help="30 se neeche = bohot gira hua (oversold). 70 se upar = bohot chadha hua (overbought).")
+                k4.metric("ATR", f"{cur}{lv['ATR']:.2f}",
+                          help="Ek din me price average kitna upar-neeche hota hai. Stop-loss set karne me kaam aata hai.")
 
-            sc = score(daily)
-            st.subheader("📊 Analysis Summary")
-            with st.container(border=True):
-                st.markdown(summary_hi(daily, sc, cur))
+            with st.expander("📖 Detail me padho"):
+                st.markdown(summary_hl(daily, sc, cur))
                 st.caption("Signals: " + " • ".join(sc["notes"]))
 
+            with st.expander("📚 Shabd samjho (SMA, RSI, MACD...)"):
+                st.markdown(
+                    "- **SMA (Moving Average):** pichhle X din ka average price. Price iske upar = tezi, neeche = mandi.\n"
+                    "- **SMA50 / SMA200:** 50 aur 200 din ka average. SMA200 lambe trend ki line hai.\n"
+                    "- **RSI:** 0 se 100 ka meter. 30 se neeche = bohot gira, 70 se upar = bohot chadha.\n"
+                    "- **MACD:** momentum batata hai. Signal line ke upar = tezi ka josh.\n"
+                    "- **ATR:** price ki daily uthal-puthal. Zyada ATR = zyada risk.\n"
+                    "- **Support:** wo level jahan se price pehle ghoom kar upar gaya.\n"
+                    "- **Resistance:** wo level jahan price pehle ruk kar neeche aaya.\n"
+                    "- **Stop-loss:** wo price jahan loss cut karke nikal jaate hain.")
+
+            # ---- AI ----
             if AI_OK:
-                st.subheader("🤖 AI Deep Analysis")
+                st.subheader("🤖 AI Samjhaye (Hinglish)")
                 ctx = build_context(symbol, daily, sc, sel_name)
                 fund, news = get_fundamentals(symbol), get_news(symbol, sel_name)
                 st.caption(f"Data: Fundamentals {'✅' if fund else '❌'} • "
@@ -338,70 +453,4 @@ with tab1:
                 if st.button("AI se analysis karo"):
                     with st.spinner("AI soch raha hai..."):
                         st.session_state.ai_out[symbol] = ask_ai(
-                            ctx, "Technical + fundamental + news analysis do. "
-                                 "Bull case, bear case aur key levels batao.")
-                if symbol in st.session_state.ai_out:
-                    st.markdown(esc(st.session_state.ai_out[symbol]))
-
-                q = st.text_input(f"{symbol} ke baare me kuch bhi poocho", key=f"q_{symbol}")
-                if q:
-                    with st.spinner("AI soch raha hai..."):
-                        st.markdown(esc(ask_ai(ctx, q)))
-
-# ---------- TAB 2 ----------
-with tab2:
-    st.subheader("Nifty Screener")
-    c1, c2, c3 = st.columns(3)
-    rsi_min, rsi_max = c1.slider("RSI range", 0, 100, (0, 100))
-    verdict_f = c2.multiselect("Verdict", list(COLORS), default=["Strong Buy", "Buy"])
-    above200 = c3.checkbox("Sirf SMA200 ke upar")
-    universe = st.text_area("Stock list (comma separated)", ", ".join(NIFTY_50), height=100)
-
-    if st.button("🚀 Scan karo", type="primary"):
-        syms = [s.strip() for s in universe.split(",") if s.strip()]
-        rows, bar = [], st.progress(0.0)
-        for i, s in enumerate(syms, 1):
-            bar.progress(i / len(syms), text=f"{s} ({i}/{len(syms)})")
-            d = load(fix_symbol(s), "1d", "2y")
-            if d is None or len(d) < 210:
-                continue
-            d = add_indicators(d)
-            l, sc = d.iloc[-1], score(d)
-            rows.append({
-                "Stock": s, "Price": round(l["Close"], 2),
-                "1D %": round((l["Close"] / d["Close"].iloc[-2] - 1) * 100, 2),
-                "RSI": round(l["RSI"], 1), "Verdict": sc["verdict"], "Score": sc["score"],
-                "vs SMA200 %": round((l["Close"] / l["SMA200"] - 1) * 100, 1),
-                "52W High %": round((l["Close"] / d["High"].tail(252).max() - 1) * 100, 1),
-            })
-        bar.empty()
-        st.session_state.scan = pd.DataFrame(rows)
-
-    if "scan" in st.session_state and not st.session_state.scan.empty:
-        df = st.session_state.scan
-        df = df[df["RSI"].between(rsi_min, rsi_max)]
-        if verdict_f:
-            df = df[df["Verdict"].isin(verdict_f)]
-        if above200:
-            df = df[df["vs SMA200 %"] > 0]
-        st.write(f"**{len(df)} stocks mile**")
-        st.dataframe(df.sort_values("Score", ascending=False),
-                     use_container_width=True, hide_index=True)
-
-# ---------- TAB 3 ----------
-with tab3:
-    if not st.session_state.watchlist:
-        st.info("Watchlist khali hai.")
-    for s in list(st.session_state.watchlist):
-        d = load(s, "1d", "1y")
-        a, b, c = st.columns([2, 2, 1])
-        a.write(f"**{s}**")
-        if d is not None and len(d) > 2:
-            b.write(f"{currency(s)}{d['Close'].iloc[-1]:,.2f} "
-                    f"({(d['Close'].iloc[-1] / d['Close'].iloc[-2] - 1) * 100:+.2f}%)")
-        if c.button("❌", key=f"rm_{s}"):
-            st.session_state.watchlist.remove(s)
-            st.rerun()
-
-st.caption("Sirf educational use ke liye. Ye financial advice nahi hai.")
-    
+             
