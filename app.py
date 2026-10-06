@@ -4,6 +4,13 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
+# AI part optional hai: ai_tools.py + GEMINI_API_KEY ho tabhi chalega
+try:
+    from ai_tools import ask_ai, build_context
+    AI_OK = True
+except Exception:
+    AI_OK = False
+
 st.set_page_config(page_title="Pro Screener", page_icon="⚡", layout="wide")
 
 NIFTY_50 = [
@@ -15,7 +22,6 @@ NIFTY_50 = [
     "CIPLA", "DRREDDY", "EICHERMOT", "HEROMOTOCO", "BRITANNIA", "APOLLOHOSP",
 ]
 
-# label -> (yfinance interval, period)
 TIMEFRAMES = {
     "Short (Hourly)": ("60m", "60d"),
     "Short (Daily)": ("1d", "2y"),
@@ -24,12 +30,31 @@ TIMEFRAMES = {
 }
 
 
-# ---------- DATA ----------
+# ---------- HELPERS ----------
 def fix_symbol(s: str) -> str:
     s = s.strip().upper()
     if "." in s or s.startswith("^") or "=" in s or "-" in s:
         return s
     return s + ".NS"
+
+
+def currency(symbol: str) -> str:
+    return "₹" if symbol.endswith((".NS", ".BO")) else "$"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_symbol(query: str):
+    """Company naam se ticker dhundo (Nvidia -> NVDA)."""
+    try:
+        res = yf.Search(query, max_results=8).quotes
+    except Exception:
+        return []
+    out = []
+    for q in res:
+        if q.get("quoteType") in ("EQUITY", "ETF"):
+            name = q.get("shortname") or q.get("longname") or ""
+            out.append((q["symbol"], name, q.get("exchDisp", "")))
+    return out
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -75,7 +100,6 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def score(df: pd.DataFrame) -> dict:
-    """One scoring function used everywhere -> verdicts never contradict each other."""
     last = df.iloc[-1]
     pts, notes = 0.0, []
 
@@ -91,8 +115,8 @@ def score(df: pd.DataFrame) -> dict:
     if not np.isnan(last["SMA200"]):
         chk(price > last["SMA200"], 1, "Price > SMA200")
         chk(price < last["SMA200"], -1, "Price < SMA200")
-        chk(last["SMA50"] > last["SMA200"], 1, "Golden alignment (SMA50 > SMA200)")
-        chk(last["SMA50"] < last["SMA200"], -1, "Death alignment (SMA50 < SMA200)")
+        chk(last["SMA50"] > last["SMA200"], 1, "SMA50 > SMA200")
+        chk(last["SMA50"] < last["SMA200"], -1, "SMA50 < SMA200")
     chk(last["MACD"] > last["MACD_SIG"], 1, "MACD bullish")
     chk(last["MACD"] < last["MACD_SIG"], -1, "MACD bearish")
     chk(last["RSI"] < 30, 1, "RSI oversold")
@@ -117,30 +141,32 @@ def badge(label, verdict):
         f"<br><b>{verdict}</b></div>", unsafe_allow_html=True)
 
 
-def summary_hi(df: pd.DataFrame, sc: dict) -> str:
+def summary_hi(df, sc, cur) -> str:
     l = df.iloc[-1]
     trend = "Bullish (तेजी)" if l["Close"] > l["SMA50"] else "Bearish (मंदी)"
     rsi = l["RSI"]
     mom = "Oversold" if rsi < 30 else "Overbought" if rsi > 70 else "Neutral (संतुलित)"
     return (
-        f"1. **ट्रेंड:** स्टॉक अभी {trend} है (SMA50: ₹{l['SMA50']:.2f})\n\n"
+        f"1. **ट्रेंड:** स्टॉक अभी {trend} है (SMA50: {cur}{l['SMA50']:.2f})\n\n"
         f"2. **मोमेंटम (RSI):** {rsi:.1f} → {mom}\n\n"
-        f"3. **सपोर्ट/रेजिस्टेंस:** 20-दिन का निचला स्तर ₹{df['Low'].tail(20).min():.2f}, "
-        f"ऊपरी स्तर ₹{df['High'].tail(20).max():.2f}\n\n"
-        f"4. **वोलैटिलिटी (ATR):** ₹{l['ATR']:.2f} प्रति कैंडल\n\n"
+        f"3. **सपोर्ट/रेजिस्टेंस:** 20-दिन का निचला स्तर {cur}{df['Low'].tail(20).min():.2f}, "
+        f"ऊपरी स्तर {cur}{df['High'].tail(20).max():.2f}\n\n"
+        f"4. **वोलैटिलिटी (ATR):** {cur}{l['ATR']:.2f} प्रति कैंडल\n\n"
         f"**Verdict:** {sc['verdict']} (score {sc['score']:+.1f})"
     )
 
 
-def candle_chart(df: pd.DataFrame, name: str):
+def candle_chart(df, name):
     d = df.tail(180)
     fig = go.Figure()
     fig.add_candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"],
                         close=d["Close"], name=name)
     for col, color in (("SMA20", "#f59e0b"), ("SMA50", "#3b82f6"), ("SMA200", "#a855f7")):
         fig.add_scatter(x=d.index, y=d[col], name=col, line=dict(width=1.2, color=color))
-    fig.add_scatter(x=d.index, y=d["BB_UP"], name="BB Up", line=dict(width=0.6, dash="dot", color="#94a3b8"))
-    fig.add_scatter(x=d.index, y=d["BB_LO"], name="BB Low", line=dict(width=0.6, dash="dot", color="#94a3b8"))
+    fig.add_scatter(x=d.index, y=d["BB_UP"], name="BB Up",
+                    line=dict(width=0.6, dash="dot", color="#94a3b8"))
+    fig.add_scatter(x=d.index, y=d["BB_LO"], name="BB Low",
+                    line=dict(width=0.6, dash="dot", color="#94a3b8"))
     fig.update_layout(height=450, xaxis_rangeslider_visible=False,
                       margin=dict(l=0, r=0, t=10, b=0), legend=dict(orientation="h"))
     return fig
@@ -153,22 +179,28 @@ if "watchlist" not in st.session_state:
 st.title("⚡ Pro Investment Terminal")
 tab1, tab2, tab3 = st.tabs(["📈 Stock Analysis", "🔎 Screener", "⭐ Watchlist"])
 
-# ---------- TAB 1: single stock ----------
+# ---------- TAB 1 ----------
 with tab1:
-    raw = st.text_input("Search Stock / ETF (e.g. TCS, NIFTYBEES, AAPL)", "NIFTYBEES")
-    symbol = fix_symbol(raw) if raw else None
-    # US stocks: type with suffix-free ticker + '-' not needed; use AAPL.US? -> just type AAPL and tick below
-    if st.checkbox("Global (US) stock – .NS mat lagao"):
-        symbol = raw.strip().upper()
+    raw = st.text_input("Company ya symbol likho (Nvidia, Apple, TCS, NIFTYBEES)", "NIFTYBEES")
+    symbol = None
+    if raw.strip():
+        opts = search_symbol(raw.strip())
+        if opts:
+            labels = [f"{s} — {n} ({e})" for s, n, e in opts]
+            pick = st.selectbox("Sahi stock chuno", labels)
+            symbol = opts[labels.index(pick)][0]
+        else:
+            symbol = fix_symbol(raw)
 
     if symbol:
+        cur = currency(symbol)
         daily = load(symbol, "1d", "2y")
         if daily is None or len(daily) < 60:
-            st.error("Data nahi mila. Symbol check karo.")
+            st.error("Data nahi mila. Dusra naam ya symbol try karo.")
         else:
             daily = add_indicators(daily)
             price, prev = daily["Close"].iloc[-1], daily["Close"].iloc[-2]
-            st.metric(symbol, f"₹{price:,.2f}", f"{(price / prev - 1) * 100:+.2f}%")
+            st.metric(symbol, f"{cur}{price:,.2f}", f"{(price / prev - 1) * 100:+.2f}%")
 
             if st.button("⭐ Watchlist me save karein"):
                 if symbol not in st.session_state.watchlist:
@@ -188,12 +220,28 @@ with tab1:
             st.plotly_chart(candle_chart(daily, symbol), use_container_width=True)
 
             sc = score(daily)
-            st.subheader("🤖 Analysis Summary")
-            with st.container(border=True):          # rendered ONCE -> no duplicate block
-                st.markdown(summary_hi(daily, sc))
+            st.subheader("📊 Analysis Summary")
+            with st.container(border=True):
+                st.markdown(summary_hi(daily, sc, cur))
                 st.caption("Signals: " + " • ".join(sc["notes"]))
 
-# ---------- TAB 2: screener ----------
+            if AI_OK:
+                st.subheader("🤖 AI Deep Analysis")
+                ctx = build_context(symbol, daily, sc)
+                if st.button("AI se analysis karo"):
+                    with st.spinner("AI soch raha hai..."):
+                        st.session_state.ai_out = ask_ai(
+                            ctx, "Technical + fundamental + news analysis do. "
+                                 "Bull case, bear case aur key levels batao.")
+                if "ai_out" in st.session_state:
+                    st.markdown(st.session_state.ai_out)
+
+                q = st.text_input("Is stock ke baare me kuch bhi poocho")
+                if q:
+                    with st.spinner("AI soch raha hai..."):
+                        st.markdown(ask_ai(ctx, q))
+
+# ---------- TAB 2 ----------
 with tab2:
     st.subheader("Nifty Screener")
     c1, c2, c3 = st.columns(3)
@@ -233,7 +281,7 @@ with tab2:
         st.dataframe(df.sort_values("Score", ascending=False),
                      use_container_width=True, hide_index=True)
 
-# ---------- TAB 3: watchlist ----------
+# ---------- TAB 3 ----------
 with tab3:
     if not st.session_state.watchlist:
         st.info("Watchlist khali hai.")
@@ -242,9 +290,11 @@ with tab3:
         a, b, c = st.columns([2, 2, 1])
         a.write(f"**{s}**")
         if d is not None and len(d) > 2:
-            b.write(f"₹{d['Close'].iloc[-1]:,.2f} ({(d['Close'].iloc[-1] / d['Close'].iloc[-2] - 1) * 100:+.2f}%)")
+            b.write(f"{currency(s)}{d['Close'].iloc[-1]:,.2f} "
+                    f"({(d['Close'].iloc[-1] / d['Close'].iloc[-2] - 1) * 100:+.2f}%)")
         if c.button("❌", key=f"rm_{s}"):
             st.session_state.watchlist.remove(s)
             st.rerun()
 
 st.caption("Sirf educational use ke liye. Ye financial advice nahi hai.")
+    
