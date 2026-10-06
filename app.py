@@ -453,4 +453,72 @@ with tab1:
                 if st.button("AI se analysis karo"):
                     with st.spinner("AI soch raha hai..."):
                         st.session_state.ai_out[symbol] = ask_ai(
-             
+                                         ctx, "Is stock ka simple analysis do.", fmt=True)
+                if symbol in st.session_state.ai_out:
+                    st.markdown(esc(st.session_state.ai_out[symbol]))
+                if news:
+                    with st.expander("📰 Latest news headlines"):
+                        for n_ in news:
+                            st.markdown(f"- {esc(n_)}")
+
+                q = st.text_input(f"{symbol} ke baare me kuch bhi poocho", key=f"q_{symbol}")
+                if q:
+                    with st.spinner("AI soch raha hai..."):
+                        st.markdown(esc(ask_ai(ctx, q)))
+
+# ---------- TAB 2 ----------
+with tab2:
+    st.subheader("Nifty Screener")
+    c1, c2, c3 = st.columns(3)
+    rsi_min, rsi_max = c1.slider("RSI range", 0, 100, (0, 100))
+    verdict_f = c2.multiselect("Verdict", list(COLORS), default=["Strong Buy", "Buy"])
+    above200 = c3.checkbox("Sirf SMA200 ke upar")
+    universe = st.text_area("Stock list (comma separated)", ", ".join(NIFTY_50), height=100)
+
+    if st.button("🚀 Scan karo", type="primary"):
+        syms = [s.strip() for s in universe.split(",") if s.strip()]
+        rows, bar = [], st.progress(0.0)
+        for i, s in enumerate(syms, 1):
+            bar.progress(i / len(syms), text=f"{s} ({i}/{len(syms)})")
+            d = load(fix_symbol(s), "1d", "2y")
+            if d is None or len(d) < 210:
+                continue
+            d = add_indicators(d)
+            l, sc = d.iloc[-1], score(d)
+            rows.append({
+                "Stock": s, "Price": round(l["Close"], 2),
+                "1D %": round((l["Close"] / d["Close"].iloc[-2] - 1) * 100, 2),
+                "RSI": round(l["RSI"], 1), "Verdict": sc["verdict"], "Score": sc["score"],
+                "vs SMA200 %": round((l["Close"] / l["SMA200"] - 1) * 100, 1),
+                "52W High %": round((l["Close"] / d["High"].tail(252).max() - 1) * 100, 1),
+            })
+        bar.empty()
+        st.session_state.scan = pd.DataFrame(rows)
+
+    if "scan" in st.session_state and not st.session_state.scan.empty:
+        df = st.session_state.scan
+        df = df[df["RSI"].between(rsi_min, rsi_max)]
+        if verdict_f:
+            df = df[df["Verdict"].isin(verdict_f)]
+        if above200:
+            df = df[df["vs SMA200 %"] > 0]
+        st.write(f"**{len(df)} stocks mile**")
+        st.dataframe(df.sort_values("Score", ascending=False),
+                     use_container_width=True, hide_index=True)
+
+# ---------- TAB 3 ----------
+with tab3:
+    if not st.session_state.watchlist:
+        st.info("Watchlist khali hai.")
+    for s in list(st.session_state.watchlist):
+        d = load(s, "1d", "1y")
+        a, b, c = st.columns([2, 2, 1])
+        a.write(f"**{s}**")
+        if d is not None and len(d) > 2:
+            b.write(f"{currency(s)}{d['Close'].iloc[-1]:,.2f} "
+                    f"({(d['Close'].iloc[-1] / d['Close'].iloc[-2] - 1) * 100:+.2f}%)")
+        if c.button("❌", key=f"rm_{s}"):
+            st.session_state.watchlist.remove(s)
+            st.rerun()
+
+st.caption("Sirf educational use ke liye. Ye financial advice nahi hai.")
