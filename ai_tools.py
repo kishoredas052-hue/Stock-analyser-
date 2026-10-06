@@ -10,10 +10,20 @@ from google.genai import types
 MODEL = "gemini-3.5-flash"
 
 SYSTEM_BASE = (
-    "Tum ek stock market analyst assistant ho. Jawab Hindi (Devanagari + zaroorat ho to English terms) me do, "
-    "chhote aur clear points me. Bull aur bear dono side batao. "
-    "Ye educational analysis hai, financial advice nahi, ye ek line me yaad dilao."
+    "Tum ek stock analyst ho jo beginner ko simple bhasha me samjha raha hai. "
+    "Jawab HINGLISH me do (Roman script, jaise 'stock abhi kamzor hai'). Devanagari bilkul use mat karo. "
+    "Chhote vaakya, kam shabd. Mushkil term aaye to bracket me aasaan matlab likho. "
+    "Ye educational hai, financial advice nahi: last me ek chhoti line me yaad dilao."
 )
+FORMAT = (
+    " Jawab is format me do, kul 120 shabd se kam:\n"
+    "**🎯 Seedha jawab:** 1 line (abhi buy / wait / avoid jaisa jhukav aur kyun)\n"
+    "**✅ Achhi baatein:** max 2 bullets\n"
+    "**⚠️ Risk:** max 2 bullets\n"
+    "**📍 Levels:** support aur resistance 1 line me\n"
+    "**⏭ Aage kya dekhna:** 1 line"
+)
+SHORT = " Sawal ka jawab 80 shabd se kam me do."
 NO_SEARCH = " Sirf diye gaye data ka use karo; jo data me nahi hai uska andaza mat lagao, bolo ki data nahi hai."
 WITH_SEARCH = (
     " Diye gaye data me fundamentals/news kam hain, isliye Google Search se latest fundamentals "
@@ -119,7 +129,7 @@ def build_context(symbol, df, sc, name: str = "") -> str:
     )
 
 
-def ask_ai(context: str, question: str, history=None) -> str:
+def ask_ai(context: str, question: str, fmt: bool = False) -> str:
     client = get_client()
     if client is None:
         return "⚠️ GEMINI_API_KEY Streamlit secrets me set nahi hai."
@@ -129,7 +139,8 @@ def ask_ai(context: str, question: str, history=None) -> str:
 
     def run(with_search: bool):
         cfg = types.GenerateContentConfig(
-            system_instruction=SYSTEM_BASE + (WITH_SEARCH if with_search else NO_SEARCH),
+            system_instruction=SYSTEM_BASE + (FORMAT if fmt else SHORT)
+            + (WITH_SEARCH if with_search else NO_SEARCH),
             max_output_tokens=2500,
             tools=[types.Tool(google_search=types.GoogleSearch())] if with_search else None,
         )
@@ -148,4 +159,4 @@ def ask_ai(context: str, question: str, history=None) -> str:
         if "429" in str(e):
             return "⏳ Free limit khatam ho gayi. 1 minute baad try karo."
         return f"AI error: {e}"
-        
+            
