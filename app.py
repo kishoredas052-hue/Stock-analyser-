@@ -1,17 +1,43 @@
+import base64
+import io
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+from PIL import Image
 
 # AI part optional hai: ai_tools.py + GEMINI_API_KEY ho tabhi chalega
 try:
-    from ai_tools import ask_ai, build_context
+    from ai_tools import ask_ai, build_context, get_fundamentals, get_news
     AI_OK = True
 except Exception:
     AI_OK = False
 
 st.set_page_config(page_title="Pro Screener", page_icon="⚡", layout="wide")
+
+st.markdown("""
+<style>
+.block-container {padding-top: 2.5rem; padding-bottom: 3rem; max-width: 1200px;}
+.app-title {font-size: 1.7rem; font-weight: 800; margin-bottom: 0.1rem;
+  background: linear-gradient(90deg,#22d3ee,#4ade80);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;}
+.app-sub {color: #94a3b8; font-size: 0.85rem; margin-bottom: 1rem;}
+[data-testid="stHeader"] {background: transparent;}
+[data-testid="stMetric"] {background: rgba(17,26,46,0.85); border: 1px solid #1e2a44;
+  padding: 14px 16px; border-radius: 14px;}
+[data-testid="stMetricValue"] {font-size: 1.9rem; font-weight: 700;}
+.stButton > button {border-radius: 10px; border: 1px solid #1e2a44; font-weight: 600;}
+.stButton > button[kind="primary"] {background: linear-gradient(90deg,#06b6d4,#22c55e);
+  border: none; color: #04121f;}
+.stTabs [data-baseweb="tab-list"] {gap: 6px;}
+.stTabs [data-baseweb="tab"] {background: rgba(17,26,46,0.85); border-radius: 10px 10px 0 0; padding: 8px 14px;}
+[data-testid="stVerticalBlockBorderWrapper"] {border-radius: 14px;}
+h2, h3 {font-size: 1.25rem !important; margin-top: 0.8rem;}
+footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
 
 NIFTY_50 = [
     "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "HINDUNILVR", "ITC", "SBIN",
@@ -136,12 +162,18 @@ COLORS = {"Strong Buy": "#15803d", "Buy": "#22c55e", "Neutral": "#64748b",
 
 def badge(label, verdict):
     st.markdown(
-        f"<div style='background:{COLORS[verdict]};padding:10px;border-radius:8px;"
-        f"text-align:center;color:white;margin-bottom:6px'><small>{label}</small>"
+        f"<div style='background:{COLORS[verdict]};padding:12px;border-radius:12px;"
+        f"text-align:center;color:white;margin-bottom:8px;box-shadow:0 2px 8px rgba(0,0,0,.35)'><small>{label}</small>"
         f"<br><b>{verdict}</b></div>", unsafe_allow_html=True)
 
 
+def esc(text: str) -> str:
+    """Streamlit markdown me $ ko math samajhta hai, isliye escape karo."""
+    return text.replace("$", "\\$")
+
+
 def summary_hi(df, sc, cur) -> str:
+    cur = esc(cur)
     l = df.iloc[-1]
     trend = "Bullish (तेजी)" if l["Close"] > l["SMA50"] else "Bearish (मंदी)"
     rsi = l["RSI"]
@@ -172,11 +204,64 @@ def candle_chart(df, name):
     return fig
 
 
+# ---------- WALLPAPER ----------
+WALLPAPERS = {
+    "Plain Dark": "#0b1220",
+    "Aurora": "linear-gradient(135deg,#0f2027,#203a43,#2c5364)",
+    "Sunset": "linear-gradient(135deg,#1a0b2e,#5b2a86,#c2410c)",
+    "Forest": "linear-gradient(135deg,#052e16,#14532d,#0f172a)",
+    "Ocean": "linear-gradient(135deg,#020617,#1e3a8a,#0e7490)",
+}
+DEFAULT_WALLPAPER = "Aurora"   # <- app khulte hi ye wallpaper dikhega, yahan naam badal sakte ho
+
+
+def image_to_data_uri(file) -> str:
+    img = Image.open(file).convert("RGB")
+    img.thumbnail((1080, 1920))                     # chhota karo taaki app slow na ho
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=75)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def apply_wallpaper(bg: str, dim=None):
+    if dim is not None:   # photo: upar dark overlay lagao taaki text padha jaye
+        overlay = f"rgba(11,18,32,{dim})"
+        bg = f"linear-gradient({overlay},{overlay}), {bg} center / cover no-repeat fixed"
+    st.markdown(f"<style>.stApp {{background: {bg} !important;}}</style>",
+                unsafe_allow_html=True)
+
+
 # ---------- STATE ----------
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = []
 
-st.title("⚡ Pro Investment Terminal")
+st.markdown("<div class='app-title'>⚡ Pro Investment Terminal</div>"
+            "<div class='app-sub'>NSE + Global stocks • Technical screener • AI analysis</div>",
+            unsafe_allow_html=True)
+
+with st.expander("🎨 Wallpaper / Theme"):
+    mode = st.radio("Wallpaper type", ["Preset", "Photo URL", "Upload photo"], horizontal=True)
+    bg, dim = WALLPAPERS[DEFAULT_WALLPAPER], None
+    if mode == "Preset":
+        names = list(WALLPAPERS)
+        pick = st.selectbox("Preset chuno", names, index=names.index(DEFAULT_WALLPAPER))
+        bg = WALLPAPERS[pick]
+    else:
+        dim = st.slider("Dark overlay (text padhne ke liye)", 0.0, 0.9, 0.6, 0.05)
+        if mode == "Photo URL":
+            url = st.text_input("Image ka link (https://...jpg)")
+            if url.startswith("http"):
+                bg = f'url("{url.replace(chr(34), "%22")}")'
+            else:
+                dim = None
+        else:
+            up = st.file_uploader("Photo chuno", type=["png", "jpg", "jpeg", "webp"])
+            if up:
+                bg = f'url("{image_to_data_uri(up)}")'
+            else:
+                dim = None
+apply_wallpaper(bg, dim)
+
 tab1, tab2, tab3 = st.tabs(["📈 Stock Analysis", "🔎 Screener", "⭐ Watchlist"])
 
 # ---------- TAB 1 ----------
@@ -208,7 +293,7 @@ with tab1:
                 st.toast("Saved!")
 
             st.subheader("⏱ Technical Verdict by Timeframe")
-            cols = st.columns(4)
+            cols = st.columns(2) + st.columns(2)
             for col, (label, (itv, per)) in zip(cols, TIMEFRAMES.items()):
                 tf = load(symbol, itv, per)
                 with col:
@@ -228,18 +313,22 @@ with tab1:
             if AI_OK:
                 st.subheader("🤖 AI Deep Analysis")
                 ctx = build_context(symbol, daily, sc)
+                fund, news = get_fundamentals(symbol), get_news(symbol)
+                st.caption(f"Data: Fundamentals {'✅' if fund else '❌'} • "
+                           f"News {'✅ ' + str(len(news)) if news else '❌'}")
+                st.session_state.setdefault("ai_out", {})
                 if st.button("AI se analysis karo"):
                     with st.spinner("AI soch raha hai..."):
-                        st.session_state.ai_out = ask_ai(
+                        st.session_state.ai_out[symbol] = ask_ai(
                             ctx, "Technical + fundamental + news analysis do. "
                                  "Bull case, bear case aur key levels batao.")
-                if "ai_out" in st.session_state:
-                    st.markdown(st.session_state.ai_out)
+                if symbol in st.session_state.ai_out:
+                    st.markdown(esc(st.session_state.ai_out[symbol]))
 
-                q = st.text_input("Is stock ke baare me kuch bhi poocho")
+                q = st.text_input(f"{symbol} ke baare me kuch bhi poocho", key=f"q_{symbol}")
                 if q:
                     with st.spinner("AI soch raha hai..."):
-                        st.markdown(ask_ai(ctx, q))
+                        st.markdown(esc(ask_ai(ctx, q)))
 
 # ---------- TAB 2 ----------
 with tab2:
