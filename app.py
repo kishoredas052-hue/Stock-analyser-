@@ -188,19 +188,20 @@ def summary_hi(df, sc, cur) -> str:
     )
 
 
-def candle_chart(df, name):
-    d = df.tail(180)
+def price_chart(df, name, days, style):
+    d = df.tail(days)
     fig = go.Figure()
-    fig.add_candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"],
-                        close=d["Close"], name=name)
+    if style == "Candle":
+        fig.add_candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"],
+                            close=d["Close"], name=name)
+    else:
+        fig.add_scatter(x=d.index, y=d["Close"], name="Price",
+                        line=dict(width=2.4, color="#22d3ee"))
     for col, color in (("SMA20", "#f59e0b"), ("SMA50", "#3b82f6"), ("SMA200", "#a855f7")):
         fig.add_scatter(x=d.index, y=d[col], name=col, line=dict(width=1.2, color=color))
-    fig.add_scatter(x=d.index, y=d["BB_UP"], name="BB Up",
-                    line=dict(width=0.6, dash="dot", color="#94a3b8"))
-    fig.add_scatter(x=d.index, y=d["BB_LO"], name="BB Low",
-                    line=dict(width=0.6, dash="dot", color="#94a3b8"))
-    fig.update_layout(height=450, xaxis_rangeslider_visible=False,
-                      margin=dict(l=0, r=0, t=10, b=0), legend=dict(orientation="h"))
+    fig.update_layout(height=380, xaxis_rangeslider_visible=False, dragmode=False,
+                      margin=dict(l=0, r=0, t=10, b=0), legend=dict(orientation="h"),
+                      paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
     return fig
 
 
@@ -267,13 +268,14 @@ tab1, tab2, tab3 = st.tabs(["📈 Stock Analysis", "🔎 Screener", "⭐ Watchli
 # ---------- TAB 1 ----------
 with tab1:
     raw = st.text_input("Company ya symbol likho (Nvidia, Apple, TCS, NIFTYBEES)", "NIFTYBEES")
-    symbol = None
+    symbol, sel_name = None, ""
     if raw.strip():
         opts = search_symbol(raw.strip())
         if opts:
             labels = [f"{s} — {n} ({e})" for s, n, e in opts]
             pick = st.selectbox("Sahi stock chuno", labels)
             symbol = opts[labels.index(pick)][0]
+            sel_name = opts[labels.index(pick)][1]
         else:
             symbol = fix_symbol(raw)
 
@@ -302,7 +304,23 @@ with tab1:
                     else:
                         badge(label, score(add_indicators(tf))["verdict"])
 
-            st.plotly_chart(candle_chart(daily, symbol), use_container_width=True)
+            r1, r2 = st.columns(2)
+            rng = r1.radio("Range", ["1M", "3M", "6M", "1Y"], index=2, horizontal=True)
+            style = r2.radio("Chart", ["Line", "Candle"], horizontal=True)
+            days = {"1M": 22, "3M": 66, "6M": 132, "1Y": 252}[rng]
+            hover = st.checkbox("Hover/tap se price dekhna hai (scroll atak sakta hai)")
+            cfg = {"displayModeBar": False, "scrollZoom": False} if hover else {"staticPlot": True}
+            st.plotly_chart(price_chart(daily, symbol, days, style),
+                            use_container_width=True, config=cfg)
+
+            lv = daily.iloc[-1]
+            hi52, lo52 = daily["High"].tail(252).max(), daily["Low"].tail(252).min()
+            k1, k2 = st.columns(2)
+            k1.metric("52W High", f"{cur}{hi52:,.2f}", f"{(price / hi52 - 1) * 100:.1f}%")
+            k2.metric("52W Low", f"{cur}{lo52:,.2f}", f"{(price / lo52 - 1) * 100:+.1f}%")
+            k3, k4 = st.columns(2)
+            k3.metric("RSI (14)", f"{lv['RSI']:.1f}")
+            k4.metric("ATR", f"{cur}{lv['ATR']:.2f}")
 
             sc = score(daily)
             st.subheader("📊 Analysis Summary")
@@ -312,8 +330,8 @@ with tab1:
 
             if AI_OK:
                 st.subheader("🤖 AI Deep Analysis")
-                ctx = build_context(symbol, daily, sc)
-                fund, news = get_fundamentals(symbol), get_news(symbol)
+                ctx = build_context(symbol, daily, sc, sel_name)
+                fund, news = get_fundamentals(symbol), get_news(symbol, sel_name)
                 st.caption(f"Data: Fundamentals {'✅' if fund else '❌'} • "
                            f"News {'✅ ' + str(len(news)) if news else '❌'}")
                 st.session_state.setdefault("ai_out", {})
