@@ -1,7 +1,6 @@
 streamlit
 yfinance
 pandas
-pandas-ta
 plotly
-mftool
+requests
 google-genai
