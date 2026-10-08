@@ -1,9 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 import plotly.graph_objects as go
-from mftool import Mftool
 import requests
 import xml.etree.ElementTree as ET
 from google import genai
@@ -18,7 +16,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom Matte Dark CSS Styling
 st.markdown("""
 <style>
     .reportview-container, .main {
@@ -52,22 +49,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 2. AI ENGINE CONFIGURATION (From ai_tech.py)
+# 2. AI ENGINE CONFIGURATION
 # =========================================================
-SYSTEM_PROMPT = """
-Tu ek Indian market ka pro analyst hai. Simple Hinglish mein analysis share kar:
-- Seedhi baat bolna: jo dikhega bolna (koi round-about baatein nahi).
-- Technicals dekho, par simple retail trader ki bhasha mein samjhao.
-- SL compulsory hai, financial context batana zaroori hai.
-"""
-
-TEMPLATE = """
-* Mood: {{mood}} (Short SL: {{sl}}, Target: {{target}})
-* Technical Setup: {{setup}}
-* Levels: Support: {{support}} | Resistance: {{resistance}}
-* Final Verdict: {{verdict}}
-"""
-
 def get_client():
     key = st.secrets.get("GEMINI_API_KEY", None)
     if not key:
@@ -113,15 +96,17 @@ def build_prompt(symbol: str, df: pd.DataFrame, news: list, fundamentals: dict) 
     Recent News Headings: {news}
 
     Task:
-    Upar diye gaye data ke aadhar par technicals aur fundamentals dono ko cover karte hue simple Hinglish analysis likho.
-    Template format use karo aur seedha actionable verdict do.
+    Aap ek pro market analyst hain. Simple Hinglish mein short aur clear analysis dein:
+    1. Overall Mood aur Trend kaisa hai?
+    2. Support aur Resistance levels ka kya matlab hai?
+    3. Actionable verdict (Entry/Exit/Wait) aur Stop Loss.
     """
     return prompt
 
 def ask_ai_with_news(symbol: str, df: pd.DataFrame):
     client = get_client()
     if not client:
-        return "⚠️ Gemini API Key configure nahi hai. Streamlit settings mein 'GEMINI_API_KEY' secret check karein."
+        return "⚠️ Gemini API Key configure nahi hai. Streamlit settings mein 'GEMINI_API_KEY' check karein."
 
     news = get_google_news(f"{symbol} stock share market")
     fundamentals = get_fundamentals(symbol)
@@ -134,7 +119,7 @@ def ask_ai_with_news(symbol: str, df: pd.DataFrame):
         )
         return response.text
     except Exception as e:
-        return f"AI generate karne mein issue aaya: {str(e)}"
+        return f"AI analysis generate karne mein error aaya: {str(e)}"
 
 # =========================================================
 # 3. TOP MACRO TICKER BAR
@@ -186,7 +171,7 @@ for sym, label, col in tickers:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # =========================================================
-# 4. MAIN MULTI-ASSET WORKSPACE TABS
+# 4. MAIN WORKSPACE TABS
 # =========================================================
 tab_stocks, tab_gold, tab_mf = st.tabs([
     "📈 Stocks Radar", 
@@ -209,27 +194,32 @@ with tab_stocks:
         if custom_stock:
             stock_symbol = custom_stock.strip().upper()
 
-    # Stock Data Fetch
     t = yf.Ticker(stock_symbol)
     df = t.history(period="6mo")
     info = t.info or {}
 
     if df is not None and not df.empty:
-        # Indicator calculation
-        df['SMA20'] = ta.sma(df['Close'], length=20)
-        df['SMA50'] = ta.sma(df['Close'], length=50)
-        df['RSI'] = ta.rsi(df['Close'], length=14)
+        # Inbuilt Technical Calculations (Bina kisi extra library ke)
+        df['SMA20'] = df['Close'].rolling(window=20).mean()
+        df['SMA50'] = df['Close'].rolling(window=50).mean()
+
+        # Inbuilt RSI Calculation
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
 
         latest_price = df['Close'].iloc[-1]
-        latest_rsi = df['RSI'].iloc[-1] if not df['RSI'].isna().iloc[-1] else 50.0
-        latest_sma20 = df['SMA20'].iloc[-1]
+        latest_rsi = df['RSI'].iloc[-1] if not pd.isna(df['RSI'].iloc[-1]) else 50.0
+        latest_sma20 = df['SMA20'].iloc[-1] if not pd.isna(df['SMA20'].iloc[-1]) else latest_price
         
         support = df['Low'].tail(20).min()
         resistance = df['High'].tail(20).max()
         stop_loss = round(latest_price * 0.97, 2)
         target = round(latest_price * 1.06, 2)
 
-        # Quick Verdict Scoring
+        # Verdict logic
         score = 0
         if latest_price > latest_sma20: score += 1
         if 40 <= latest_rsi <= 65: score += 1
@@ -258,13 +248,13 @@ with tab_stocks:
             """, unsafe_allow_html=True)
 
         with c_right:
-            # Candlestick Chart
+            # Chart
             fig = go.Figure()
             fig.add_trace(go.Candlestick(
                 x=df.index,
                 open=df['Open'], high=df['High'],
                 low=df['Low'], close=df['Close'],
-                name="Candles"
+                name="Price"
             ))
             fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='#38bdf8', width=1.5), name="SMA 20"))
             fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='#f59e0b', width=1.5), name="SMA 50"))
@@ -279,7 +269,7 @@ with tab_stocks:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            # Fundamentals Row
+            # Fundamentals
             st.markdown("#### 🔍 Fundamental Ratios")
             f1, f2, f3, f4 = st.columns(4)
             pe = info.get("trailingPE", "N/A")
@@ -294,11 +284,11 @@ with tab_stocks:
             f3.metric("Market Cap", mcap_val)
             f4.metric("Debt-to-Equity", f"{de:.2f}" if isinstance(de, (int, float)) else de)
 
-            # AI SECTION (Powered by ai_tech logic)
+            # AI Insights
             st.markdown("---")
-            st.markdown("#### 🤖 AI Samjhaye (News & Technical Analysis)")
+            st.markdown("#### 🤖 AI Samjhaye (Hinglish Analysis)")
             if st.button("Generate AI Market Summary ⚡"):
-                with st.spinner("AI news aur technical indicators scan kar raha hai..."):
+                with st.spinner("AI news aur indicators scan kar raha hai..."):
                     ai_response = ask_ai_with_news(stock_symbol, df)
                     st.markdown(f"""
                     <div style="background:#151c2c; border-left: 4px solid #38bdf8; padding: 16px; border-radius: 6px; line-height: 1.6;">
@@ -317,7 +307,7 @@ with tab_gold:
         g_etf_price, g_etf_delta = fetch_ticker_data("GOLDBEES.NS")
         if g_etf_price:
             st.metric("Gold BeES ETF Price (NSE)", f"₹{g_etf_price:.2f}", f"{g_etf_delta:.2f}%")
-        st.info("💡 **Gold Allocation:** Market volatility aur inflation se bachav ke liye standard investment rule ke mutabiq 10-15% Gold hold karna chahiye.")
+        st.info("💡 **Gold Allocation:** Market volatility se bachav ke liye standard rule ke mutabiq 10-15% Gold hold karna chahiye.")
 
     with g2:
         gold_df = yf.download("GOLDBEES.NS", period="1y", interval="1d")
@@ -359,7 +349,7 @@ with tab_mf:
         st.dataframe(mf_table, use_container_width=True, hide_index=True)
 
     with mf2:
-        st.markdown("#### 💰 Visual SIP Calculator")
+        st.markdown("#### 💰 Visual SIP Planner")
         sip_amount = st.slider("Monthly SIP Amount (₹)", 1000, 50000, 5000, step=1000)
         expected_cagr = st.slider("Expected Annual Return (%)", 8, 25, 13)
         time_period = st.slider("Investment Period (Years)", 1, 30, 10)
@@ -375,4 +365,5 @@ with tab_mf:
         s2.metric("Total Future Value", f"₹{future_val:,.0f}", f"+₹{wealth_gain:,.0f}")
 
 st.markdown("<br><hr>", unsafe_allow_html=True)
-st.caption("⚠️ Disclaimer: Yeh app algorithmic analysis aur educational purposes ke liye hai. Yeh certified SEBI investment advice nahi hai.")
+st.caption("⚠️ Disclaimer: Yeh app algorithmic analysis aur educational purposes ke liye hai. Yeh SEBI registered investment advice nahi hai.")
+            
