@@ -1,527 +1,378 @@
-import base64
-import io
-
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
-from PIL import Image
+import pandas as pd
+import pandas_ta as ta
+import plotly.graph_objects as go
+from mftool import Mftool
+import requests
+import xml.etree.ElementTree as ET
+from google import genai
 
-# AI part optional hai: ai_tools.py + GEMINI_API_KEY ho tabhi chalega
-try:
-    from ai_tools import ask_ai, build_context, get_fundamentals, get_news
-    AI_OK = True
-except Exception:
-    AI_OK = False
+# =========================================================
+# 1. PAGE SETUP & MODERN FINTECH THEME
+# =========================================================
+st.set_page_config(
+    page_title="Pro Investment Terminal",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-st.set_page_config(page_title="Pro Screener", page_icon="⚡", layout="wide")
-
+# Custom Matte Dark CSS Styling
 st.markdown("""
 <style>
-.block-container {padding-top: 2.5rem; padding-bottom: 3rem; max-width: 1200px;}
-.app-title {font-size: 1.7rem; font-weight: 800; margin-bottom: 0.1rem;
-  background: linear-gradient(90deg,#22d3ee,#4ade80);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;}
-.app-sub {color: #94a3b8; font-size: 0.85rem; margin-bottom: 1rem;}
-[data-testid="stHeader"] {background: transparent;}
-[data-testid="stMetric"] {background: rgba(17,26,46,0.85); border: 1px solid #1e2a44;
-  padding: 14px 16px; border-radius: 14px;}
-[data-testid="stMetricValue"] {font-size: 1.9rem; font-weight: 700;}
-.stButton > button {border-radius: 10px; border: 1px solid #1e2a44; font-weight: 600;}
-.stButton > button[kind="primary"] {background: linear-gradient(90deg,#06b6d4,#22c55e);
-  border: none; color: #04121f;}
-.stTabs [data-baseweb="tab-list"] {gap: 6px;}
-.stTabs [data-baseweb="tab"] {background: rgba(17,26,46,0.85); border-radius: 10px 10px 0 0; padding: 8px 14px;}
-[data-testid="stVerticalBlockBorderWrapper"] {border-radius: 14px;}
-h2, h3 {font-size: 1.25rem !important; margin-top: 0.8rem;}
-footer {visibility: hidden;}
+    .reportview-container, .main {
+        background-color: #0b0f19;
+        color: #e2e8f0;
+    }
+    .metric-card {
+        background: #151c2c;
+        border: 1px solid #232f45;
+        border-radius: 10px;
+        padding: 12px;
+        text-align: center;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+    }
+    .metric-title { font-size: 12px; color: #94a3b8; margin-bottom: 4px; }
+    .metric-value { font-size: 18px; font-weight: 700; color: #f8fafc; }
+    .metric-delta-pos { font-size: 12px; color: #22c55e; font-weight: 600; }
+    .metric-delta-neg { font-size: 12px; color: #ef4444; font-weight: 600; }
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+    .stTabs [data-baseweb="tab"] {
+        background-color: #151c2c;
+        border-radius: 8px 8px 0px 0px;
+        color: #94a3b8;
+        padding: 10px 18px;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #2563eb !important;
+        color: #ffffff !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-NIFTY_50 = [
-    "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "HINDUNILVR", "ITC", "SBIN",
-    "BHARTIARTL", "KOTAKBANK", "LT", "AXISBANK", "ASIANPAINT", "MARUTI", "SUNPHARMA",
-    "TITAN", "BAJFINANCE", "HCLTECH", "WIPRO", "ULTRACEMCO", "NTPC", "ONGC",
-    "POWERGRID", "TATAMOTORS", "TATASTEEL", "M&M", "ADANIENT", "COALINDIA",
-    "TECHM", "NESTLEIND", "JSWSTEEL", "INDUSINDBK", "BAJAJFINSV", "GRASIM",
-    "CIPLA", "DRREDDY", "EICHERMOT", "HEROMOTOCO", "BRITANNIA", "APOLLOHOSP",
-]
+# =========================================================
+# 2. AI ENGINE CONFIGURATION (From ai_tech.py)
+# =========================================================
+SYSTEM_PROMPT = """
+Tu ek Indian market ka pro analyst hai. Simple Hinglish mein analysis share kar:
+- Seedhi baat bolna: jo dikhega bolna (koi round-about baatein nahi).
+- Technicals dekho, par simple retail trader ki bhasha mein samjhao.
+- SL compulsory hai, financial context batana zaroori hai.
+"""
 
-TIMEFRAMES = {
-    "Short (Hourly)": ("60m", "60d"),
-    "Short (Daily)": ("1d", "2y"),
-    "Medium (Weekly)": ("1wk", "5y"),
-    "Long (Monthly)": ("1mo", "10y"),
-}
+TEMPLATE = """
+* Mood: {{mood}} (Short SL: {{sl}}, Target: {{target}})
+* Technical Setup: {{setup}}
+* Levels: Support: {{support}} | Resistance: {{resistance}}
+* Final Verdict: {{verdict}}
+"""
 
+def get_client():
+    key = st.secrets.get("GEMINI_API_KEY", None)
+    if not key:
+        return None
+    return genai.Client(api_key=key)
 
-# ---------- HELPERS ----------
-def fix_symbol(s: str) -> str:
-    s = s.strip().upper()
-    if "." in s or s.startswith("^") or "=" in s or "-" in s:
-        return s
-    return s + ".NS"
-
-
-def currency(symbol: str) -> str:
-    return "₹" if symbol.endswith((".NS", ".BO")) else "$"
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def search_symbol(query: str):
-    """Company naam se ticker dhundo (Nvidia -> NVDA)."""
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_fundamentals(symbol: str) -> dict:
     try:
-        res = yf.Search(query, max_results=8).quotes
+        tk = yf.Ticker(symbol)
+        info = tk.info or {}
+        keys = ['sector', 'trailingPE', 'priceToBook', 'debtToEquity', 'returnOnEquity', 'marketCap']
+        return {k: info.get(k, 'N/A') for k in keys}
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_google_news(query: str, max_items: int = 4) -> list:
+    try:
+        url = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
+        resp = requests.get(url, timeout=5)
+        root = ET.fromstring(resp.content)
+        items = []
+        for item in root.findall('.//item')[:max_items]:
+            title = item.find('title').text if item.find('title') is not None else ""
+            if title:
+                items.append(title)
+        return items
     except Exception:
         return []
-    out = []
-    for q in res:
-        if q.get("quoteType") in ("EQUITY", "ETF"):
-            name = q.get("shortname") or q.get("longname") or ""
-            out.append((q["symbol"], name, q.get("exchDisp", "")))
-    return out
 
+def build_prompt(symbol: str, df: pd.DataFrame, news: list, fundamentals: dict) -> str:
+    close = df['Close'].iloc[-1]
+    sma20 = df['SMA20'].iloc[-1] if 'SMA20' in df else close
+    sma50 = df['SMA50'].iloc[-1] if 'SMA50' in df else close
+    rsi = df['RSI'].iloc[-1] if 'RSI' in df else 50.0
 
-@st.cache_data(ttl=900, show_spinner=False)
-def load(symbol: str, interval: str = "1d", period: str = "2y"):
+    prompt = f"""
+    Stock: {symbol}
+    Current Price: ₹{close:.2f}
+    SMA 20: ₹{sma20:.2f} | SMA 50: ₹{sma50:.2f} | RSI: {rsi:.1f}
+    Fundamentals: {fundamentals}
+    Recent News Headings: {news}
+
+    Task:
+    Upar diye gaye data ke aadhar par technicals aur fundamentals dono ko cover karte hue simple Hinglish analysis likho.
+    Template format use karo aur seedha actionable verdict do.
+    """
+    return prompt
+
+def ask_ai_with_news(symbol: str, df: pd.DataFrame):
+    client = get_client()
+    if not client:
+        return "⚠️ Gemini API Key configure nahi hai. Streamlit settings mein 'GEMINI_API_KEY' secret check karein."
+
+    news = get_google_news(f"{symbol} stock share market")
+    fundamentals = get_fundamentals(symbol)
+    prompt = build_prompt(symbol, df, news, fundamentals)
+
     try:
-        df = yf.download(symbol, interval=interval, period=period,
-                         auto_adjust=True, progress=False, threads=False)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        return response.text
+    except Exception as e:
+        return f"AI generate karne mein issue aaya: {str(e)}"
+
+# =========================================================
+# 3. TOP MACRO TICKER BAR
+# =========================================================
+@st.cache_data(ttl=300)
+def fetch_ticker_data(symbol):
+    try:
+        t = yf.Ticker(symbol)
+        df = t.history(period="5d")
+        if len(df) >= 2:
+            current = df['Close'].iloc[-1]
+            prev = df['Close'].iloc[-2]
+            pct = ((current - prev) / prev) * 100
+            return current, pct
     except Exception:
-        return None
-    if df is None or df.empty:
-        return None
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df.dropna(subset=["Close"])
+        pass
+    return None, None
 
+col1, col2, col3, col4, col5 = st.columns(5)
+tickers = [
+    ("^NSEI", "NIFTY 50", col1),
+    ("^NSEBANK", "BANK NIFTY", col2),
+    ("GOLDBEES.NS", "GOLD ETF", col3),
+    ("SILVERBEES.NS", "SILVER ETF", col4),
+    ("INR=X", "USD / INR", col5)
+]
 
-# ---------- INDICATORS ----------
-def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    c = df["Close"]
-    for n in (20, 50, 200):
-        df[f"SMA{n}"] = c.rolling(n).mean()
-
-    delta = c.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
-    df["RSI"] = 100 - 100 / (1 + gain / loss.replace(0, np.nan))
-
-    ema12 = c.ewm(span=12, adjust=False).mean()
-    ema26 = c.ewm(span=26, adjust=False).mean()
-    df["MACD"] = ema12 - ema26
-    df["MACD_SIG"] = df["MACD"].ewm(span=9, adjust=False).mean()
-
-    mid = c.rolling(20).mean()
-    std = c.rolling(20).std()
-    df["BB_UP"], df["BB_LO"] = mid + 2 * std, mid - 2 * std
-
-    tr = pd.concat([df["High"] - df["Low"],
-                    (df["High"] - c.shift()).abs(),
-                    (df["Low"] - c.shift()).abs()], axis=1).max(axis=1)
-    df["ATR"] = tr.rolling(14).mean()
-    return df
-
-
-def score(df: pd.DataFrame) -> dict:
-    last = df.iloc[-1]
-    pts, notes = 0.0, []
-
-    def chk(cond, p, text):
-        nonlocal pts
-        if cond:
-            pts += p
-            notes.append(text)
-
-    price = last["Close"]
-    chk(price > last["SMA50"], 1, "Price > SMA50")
-    chk(price < last["SMA50"], -1, "Price < SMA50")
-    if not np.isnan(last["SMA200"]):
-        chk(price > last["SMA200"], 1, "Price > SMA200")
-        chk(price < last["SMA200"], -1, "Price < SMA200")
-        chk(last["SMA50"] > last["SMA200"], 1, "SMA50 > SMA200")
-        chk(last["SMA50"] < last["SMA200"], -1, "SMA50 < SMA200")
-    chk(last["MACD"] > last["MACD_SIG"], 1, "MACD bullish")
-    chk(last["MACD"] < last["MACD_SIG"], -1, "MACD bearish")
-    chk(last["RSI"] < 30, 1, "RSI oversold")
-    chk(last["RSI"] > 70, -1, "RSI overbought")
-
-    if pts >= 3: verdict = "Strong Buy"
-    elif pts >= 1: verdict = "Buy"
-    elif pts > -1: verdict = "Neutral"
-    elif pts > -3: verdict = "Sell"
-    else: verdict = "Strong Sell"
-    return {"score": pts, "verdict": verdict, "notes": notes}
-
-
-COLORS = {"Strong Buy": "#15803d", "Buy": "#22c55e", "Neutral": "#64748b",
-          "Sell": "#ef4444", "Strong Sell": "#b91c1c"}
-
-
-def badge(label, verdict):
-    st.markdown(
-        f"<div style='background:{COLORS[verdict]};padding:12px;border-radius:12px;"
-        f"text-align:center;color:white;margin-bottom:8px;box-shadow:0 2px 8px rgba(0,0,0,.35)'><small>{label}</small>"
-        f"<br><b>{verdict}</b></div>", unsafe_allow_html=True)
-
-
-def esc(text: str) -> str:
-    """Streamlit markdown me $ ko math samajhta hai, isliye escape karo."""
-    return text.replace("$", "\\$")
-
-
-def summary_hl(df, sc, cur) -> str:
-    cur = esc(cur)
-    l = df.iloc[-1]
-    trend = "Bullish (tezi)" if l["Close"] > l["SMA50"] else "Bearish (mandi)"
-    rsi = l["RSI"]
-    mom = ("Oversold (bohot gira hua)" if rsi < 30
-           else "Overbought (bohot chadha hua)" if rsi > 70 else "Neutral (normal)")
-    return (
-        f"1. **Trend:** Stock abhi {trend} hai (SMA50: {cur}{l['SMA50']:.2f})\n\n"
-        f"2. **Momentum (RSI):** {rsi:.1f} → {mom}\n\n"
-        f"3. **Support/Resistance:** 20 din ka low {cur}{df['Low'].tail(20).min():.2f}, "
-        f"high {cur}{df['High'].tail(20).max():.2f}\n\n"
-        f"4. **Uthal-puthal (ATR):** {cur}{l['ATR']:.2f} per candle\n\n"
-        f"**Verdict:** {sc['verdict']} (score {sc['score']:+.1f})"
-    )
-
-
-def price_chart(df, name, days, style):
-    d = df.tail(days)
-    fig = go.Figure()
-    if style == "Candle":
-        fig.add_candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"],
-                            close=d["Close"], name=name)
-    else:
-        fig.add_scatter(x=d.index, y=d["Close"], name="Price",
-                        line=dict(width=2.4, color="#22d3ee"))
-    for col, color in (("SMA20", "#f59e0b"), ("SMA50", "#3b82f6"), ("SMA200", "#a855f7")):
-        fig.add_scatter(x=d.index, y=d[col], name=col, line=dict(width=1.2, color=color))
-    fig.update_layout(height=380, xaxis_rangeslider_visible=False, dragmode=False,
-                      margin=dict(l=0, r=0, t=10, b=0), legend=dict(orientation="h"),
-                      paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-    return fig
-
-
-def gauge(score_val, verdict):
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number", value=score_val,
-        number={"font": {"size": 34}, "valueformat": "+.0f"},
-        title={"text": verdict, "font": {"size": 22}},
-        gauge={
-            "axis": {"range": [-5, 5], "tickvals": [-5, 0, 5],
-                     "ticktext": ["Sell", "Neutral", "Buy"]},
-            "bar": {"color": "#e2e8f0", "thickness": 0.25},
-            "steps": [
-                {"range": [-5, -3], "color": "#b91c1c"}, {"range": [-3, -1], "color": "#ef4444"},
-                {"range": [-1, 1], "color": "#64748b"}, {"range": [1, 3], "color": "#22c55e"},
-                {"range": [3, 5], "color": "#15803d"}],
-        }))
-    fig.update_layout(height=270, margin=dict(l=45, r=45, t=70, b=35),
-                      paper_bgcolor="rgba(0,0,0,0)", font={"color": "#e2e8f0"})
-    return fig
-
-
-def plain_line(df, sc, tfv) -> str:
-    v, rsi = sc["verdict"], df.iloc[-1]["RSI"]
-    if v in ("Strong Buy", "Buy"):
-        s = "Trend majboot hai. Dip aane par buy karna ek option hai, par stop-loss zaroor rakho."
-    elif v == "Neutral":
-        s = "Abhi direction clear nahi hai. Breakout ka wait karna better rahega."
-    else:
-        s = "Trend kamzor hai. Abhi naya buy risky hai; support hold hone ya trend palatne ka wait karo."
-    if rsi < 30 and v in ("Sell", "Strong Sell", "Neutral"):
-        s += " Lekin RSI oversold hai, isliye chhota bounce aa sakta hai."
-    if rsi > 70 and v in ("Buy", "Strong Buy"):
-        s += " Par RSI overbought hai, isliye naye buy me jaldi mat karo."
-    vals = set(tfv.values())
-    if vals & {"Buy", "Strong Buy"} and vals & {"Sell", "Strong Sell"}:
-        s += " Alag-alag timeframe ke signal mix hain, isliye short aur long term ka plan alag rakho."
-    return s
-
-
-def lights(df, tfv) -> str:
-    l = df.iloc[-1]
-    p = l["Close"]
-    n = int(p > l["SMA50"]) + int(p > (l["SMA200"] if not np.isnan(l["SMA200"]) else l["SMA50"]))
-    rows = []
-    rows.append({2: "🟢 **Trend:** upar hai (price dono average ke upar)",
-                 1: "🟡 **Trend:** mixed hai (ek average ke upar, ek ke neeche)",
-                 0: "🔴 **Trend:** neeche hai (price dono average ke neeche)"}[n])
-    rows.append("🟢 **Momentum:** bullish (MACD upar)" if l["MACD"] > l["MACD_SIG"]
-                else "🔴 **Momentum:** bearish (MACD neeche)")
-    r = l["RSI"]
-    rows.append(f"🟢 **RSI {r:.0f}:** oversold, bohot gira hua, bounce ho sakta hai" if r < 30
-                else f"🔴 **RSI {r:.0f}:** overbought, bohot chadha hua, correction ka risk" if r > 70
-                else f"🟡 **RSI {r:.0f}:** normal zone")
-    ap = l["ATR"] / p * 100
-    rows.append(f"🟢 **Uthal-puthal:** kam ({ap:.1f}% per candle)" if ap < 1.5
-                else f"🟡 **Uthal-puthal:** medium ({ap:.1f}% per candle)" if ap < 3
-                else f"🔴 **Uthal-puthal:** zyada ({ap:.1f}% per candle)")
-    if tfv:
-        b = sum(v in ("Buy", "Strong Buy") for v in tfv.values())
-        s_ = sum(v in ("Sell", "Strong Sell") for v in tfv.values())
-        icon = "🟢" if b > s_ else "🔴" if s_ > b else "🟡"
-        rows.append(f"{icon} **Timeframes:** {len(tfv)} me se {b} Buy, {s_} Sell, baaki Neutral")
-    return "\n".join(f"- {r}" for r in rows)
-
-
-def levels_table(df, cur) -> str:
-    cur = esc(cur)
-    l = df.iloc[-1]
-    price, atr = l["Close"], l["ATR"]
-    sup, res = df["Low"].tail(20).min(), df["High"].tail(20).max()
-    sl = price - 1.5 * atr
-    tgt = max(res, price + 2 * atr) if res > price else price + 2 * atr
-    rr = (tgt - price) / (price - sl)
-    return (
-        "| Level | Price | Matlab |\n|---|---|---|\n"
-        f"| 🛡 Support | {cur}{sup:.2f} | Yahan tak gira to buyers aa sakte hain |\n"
-        f"| 🚧 Resistance | {cur}{res:.2f} | Yahan upar rukawat aa sakti hai |\n"
-        f"| ⛔ Stop-loss idea | {cur}{sl:.2f} | Isse neeche gira to nikal jao (1.5×ATR) |\n"
-        f"| 🎯 Target idea | {cur}{tgt:.2f} | Pehla target |\n"
-        f"| ⚖ Risk:Reward | 1 : {rr:.1f} | 1 se zyada ho to behtar |"
-    )
-
-
-# ---------- WALLPAPER ----------
-WALLPAPERS = {
-    "Plain Dark": "#0b1220",
-    "Aurora": "linear-gradient(135deg,#0f2027,#203a43,#2c5364)",
-    "Sunset": "linear-gradient(135deg,#1a0b2e,#5b2a86,#c2410c)",
-    "Forest": "linear-gradient(135deg,#052e16,#14532d,#0f172a)",
-    "Ocean": "linear-gradient(135deg,#020617,#1e3a8a,#0e7490)",
-}
-DEFAULT_WALLPAPER = "Aurora"   # <- app khulte hi ye wallpaper dikhega, yahan naam badal sakte ho
-
-
-def image_to_data_uri(file) -> str:
-    img = Image.open(file).convert("RGB")
-    img.thumbnail((1080, 1920))                     # chhota karo taaki app slow na ho
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=75)
-    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-
-
-def apply_wallpaper(bg: str, dim=None):
-    if dim is not None:   # photo: upar dark overlay lagao taaki text padha jaye
-        overlay = f"rgba(11,18,32,{dim})"
-        bg = f"linear-gradient({overlay},{overlay}), {bg} center / cover no-repeat fixed"
-    st.markdown(f"<style>.stApp {{background: {bg} !important;}}</style>",
-                unsafe_allow_html=True)
-
-
-# ---------- STATE ----------
-if "watchlist" not in st.session_state:
-    st.session_state.watchlist = []
-
-st.markdown("<div class='app-title'>⚡ Pro Investment Terminal</div>"
-            "<div class='app-sub'>NSE + Global stocks • Technical screener • AI analysis</div>",
-            unsafe_allow_html=True)
-
-with st.expander("🎨 Wallpaper / Theme"):
-    mode = st.radio("Wallpaper type", ["Preset", "Photo URL", "Upload photo"], horizontal=True)
-    bg, dim = WALLPAPERS[DEFAULT_WALLPAPER], None
-    if mode == "Preset":
-        names = list(WALLPAPERS)
-        pick = st.selectbox("Preset chuno", names, index=names.index(DEFAULT_WALLPAPER))
-        bg = WALLPAPERS[pick]
-    else:
-        dim = st.slider("Dark overlay (text padhne ke liye)", 0.0, 0.9, 0.6, 0.05)
-        if mode == "Photo URL":
-            url = st.text_input("Image ka link (https://...jpg)")
-            if url.startswith("http"):
-                bg = f'url("{url.replace(chr(34), "%22")}")'
-            else:
-                dim = None
+for sym, label, col in tickers:
+    val, delta = fetch_ticker_data(sym)
+    with col:
+        if val is not None:
+            delta_class = "metric-delta-pos" if delta >= 0 else "metric-delta-neg"
+            delta_sign = "+" if delta >= 0 else ""
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-title">{label}</div>
+                <div class="metric-value">₹{val:,.2f}</div>
+                <div class="{delta_class}">{delta_sign}{delta:.2f}%</div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            up = st.file_uploader("Photo chuno", type=["png", "jpg", "jpeg", "webp"])
-            if up:
-                bg = f'url("{image_to_data_uri(up)}")'
-            else:
-                dim = None
-apply_wallpaper(bg, dim)
-st.markdown("[🏠 Market Dashboard kholo](/dashboard)")
-tab1, tab2, tab3 = st.tabs(["📈 Stock Analysis", "🔎 Screener", "⭐ Watchlist"])
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-title">{label}</div>
+                <div class="metric-value">N/A</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-# ---------- TAB 1 ----------
-with tab1:
-    raw = st.text_input("Company ya symbol likho (Nvidia, Apple, TCS, NIFTYBEES)", "NIFTYBEES")
-    symbol, sel_name = None, ""
-    if raw.strip():
-        opts = search_symbol(raw.strip())
-        if opts:
-            labels = [f"{s} — {n} ({e})" for s, n, e in opts]
-            pick = st.selectbox("Sahi stock chuno", labels)
-            symbol = opts[labels.index(pick)][0]
-            sel_name = opts[labels.index(pick)][1]
+st.markdown("<br>", unsafe_allow_html=True)
+
+# =========================================================
+# 4. MAIN MULTI-ASSET WORKSPACE TABS
+# =========================================================
+tab_stocks, tab_gold, tab_mf = st.tabs([
+    "📈 Stocks Radar", 
+    "🪙 Gold & Commodities", 
+    "📊 Mutual Funds Tracker"
+])
+
+# ----------------- TAB 1: STOCKS RADAR -----------------
+with tab_stocks:
+    c_left, c_right = st.columns([1, 3])
+
+    with c_left:
+        st.subheader("Select Stock")
+        stock_symbol = st.selectbox(
+            "Quick Select",
+            ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ITC.NS", "TATAMOTORS.NS"],
+            index=0
+        )
+        custom_stock = st.text_input("Ya Dusra Stock Likhein (e.g. SBIN.NS)", "")
+        if custom_stock:
+            stock_symbol = custom_stock.strip().upper()
+
+    # Stock Data Fetch
+    t = yf.Ticker(stock_symbol)
+    df = t.history(period="6mo")
+    info = t.info or {}
+
+    if df is not None and not df.empty:
+        # Indicator calculation
+        df['SMA20'] = ta.sma(df['Close'], length=20)
+        df['SMA50'] = ta.sma(df['Close'], length=50)
+        df['RSI'] = ta.rsi(df['Close'], length=14)
+
+        latest_price = df['Close'].iloc[-1]
+        latest_rsi = df['RSI'].iloc[-1] if not df['RSI'].isna().iloc[-1] else 50.0
+        latest_sma20 = df['SMA20'].iloc[-1]
+        
+        support = df['Low'].tail(20).min()
+        resistance = df['High'].tail(20).max()
+        stop_loss = round(latest_price * 0.97, 2)
+        target = round(latest_price * 1.06, 2)
+
+        # Quick Verdict Scoring
+        score = 0
+        if latest_price > latest_sma20: score += 1
+        if 40 <= latest_rsi <= 65: score += 1
+        if latest_price > support: score += 1
+
+        if score >= 3:
+            verdict, verdict_color = "Strong Buy", "#22c55e"
+        elif score == 2:
+            verdict, verdict_color = "Moderate Buy", "#38bdf8"
         else:
-            symbol = fix_symbol(raw)
+            verdict, verdict_color = "Sell / Caution", "#ef4444"
 
-    if symbol:
-        cur = currency(symbol)
-        daily = load(symbol, "1d", "2y")
-        if daily is None or len(daily) < 60:
-            st.error("Data nahi mila. Dusra naam ya symbol try karo.")
-        else:
-            daily = add_indicators(daily)
-            price, prev = daily["Close"].iloc[-1], daily["Close"].iloc[-2]
-            st.metric(symbol, f"{cur}{price:,.2f}", f"{(price / prev - 1) * 100:+.2f}%")
+        with c_left:
+            st.markdown(f"""
+            <div style="background:#151c2c; border:1px solid #232f45; border-radius:10px; padding:15px; margin-top:15px;">
+                <div style="font-size:12px; color:#94a3b8;">Daily Verdict</div>
+                <div style="font-size:24px; font-weight:800; color:{verdict_color};">{verdict}</div>
+                <hr style="border-color:#232f45;">
+                <div style="font-size:13px;"><b>CMP:</b> ₹{latest_price:,.2f}</div>
+                <div style="font-size:13px;"><b>RSI (14):</b> {latest_rsi:.1f}</div>
+                <div style="font-size:13px;"><b>Support:</b> ₹{support:,.2f}</div>
+                <div style="font-size:13px;"><b>Resistance:</b> ₹{resistance:,.2f}</div>
+                <div style="font-size:13px; color:#ef4444;"><b>Stop Loss:</b> ₹{stop_loss:,.2f}</div>
+                <div style="font-size:13px; color:#22c55e;"><b>Target:</b> ₹{target:,.2f}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-            if st.button("⭐ Watchlist me save karein"):
-                if symbol not in st.session_state.watchlist:
-                    st.session_state.watchlist.append(symbol)
-                st.toast("Saved!")
+        with c_right:
+            # Candlestick Chart
+            fig = go.Figure()
+            fig.add_trace(go.Candlestick(
+                x=df.index,
+                open=df['Open'], high=df['High'],
+                low=df['Low'], close=df['Close'],
+                name="Candles"
+            ))
+            fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='#38bdf8', width=1.5), name="SMA 20"))
+            fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='#f59e0b', width=1.5), name="SMA 50"))
+            
+            fig.update_layout(
+                template="plotly_dark",
+                paper_bgcolor="#0b0f19",
+                plot_bgcolor="#111827",
+                height=420,
+                margin=dict(l=10, r=10, t=30, b=10),
+                xaxis_rangeslider_visible=False
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-            sc = score(daily)
-            tfv = {}
-            for label, (itv, per) in TIMEFRAMES.items():
-                tf = load(symbol, itv, per)
-                if tf is not None and len(tf) >= 55:
-                    tfv[label] = score(add_indicators(tf))["verdict"]
+            # Fundamentals Row
+            st.markdown("#### 🔍 Fundamental Ratios")
+            f1, f2, f3, f4 = st.columns(4)
+            pe = info.get("trailingPE", "N/A")
+            roe = info.get("returnOnEquity", "N/A")
+            roe_val = f"{roe*100:.1f}%" if isinstance(roe, (int, float)) else "N/A"
+            mcap = info.get("marketCap", "N/A")
+            mcap_val = f"₹{mcap/10000000:.0f} Cr" if isinstance(mcap, (int, float)) else "N/A"
+            de = info.get("debtToEquity", "N/A")
 
-            # ---- QUICK VIEW ----
-            st.subheader("⚡ Quick View (30 second me samjho)")
-            st.plotly_chart(gauge(sc["score"], sc["verdict"]),
-                            use_container_width=True, config={"staticPlot": True})
-            st.info(plain_line(daily, sc, tfv))
-            st.markdown(lights(daily, tfv))
-            with st.container(border=True):
-                st.markdown("**📍 Important levels** (agar buy karna ho to, ye idea hai, advice nahi)")
-                st.markdown(levels_table(daily, cur))
-                
-                if sc["verdict"] in ("Sell", "Strong Sell"):
-                    st.warning("⚠️ Trend kamzor hai. Ye levels tabhi dekho jab trend palatne ka signal mile, abhi buy ka signal nahi hai.")
+            f1.metric("P/E Ratio", f"{pe:.1f}" if isinstance(pe, (int, float)) else pe)
+            f2.metric("ROE", roe_val)
+            f3.metric("Market Cap", mcap_val)
+            f4.metric("Debt-to-Equity", f"{de:.2f}" if isinstance(de, (int, float)) else de)
 
-            st.subheader("⏱ Timeframe wise Verdict")
-            cols = st.columns(2) + st.columns(2)
-            for col, label in zip(cols, TIMEFRAMES):
-                with col:
-                    if label in tfv:
-                        badge(label, tfv[label])
-                    else:
-                        st.caption(f"{label}: data kam hai")
+            # AI SECTION (Powered by ai_tech logic)
+            st.markdown("---")
+            st.markdown("#### 🤖 AI Samjhaye (News & Technical Analysis)")
+            if st.button("Generate AI Market Summary ⚡"):
+                with st.spinner("AI news aur technical indicators scan kar raha hai..."):
+                    ai_response = ask_ai_with_news(stock_symbol, df)
+                    st.markdown(f"""
+                    <div style="background:#151c2c; border-left: 4px solid #38bdf8; padding: 16px; border-radius: 6px; line-height: 1.6;">
+                        {ai_response}
+                    </div>
+                    """, unsafe_allow_html=True)
+    else:
+        st.error("Stock data load nahi hua. Kripya symbol check karein.")
 
-            # ---- CHART ----
-            r1, r2 = st.columns(2)
-            rng = r1.radio("Range", ["1M", "3M", "6M", "1Y"], index=2, horizontal=True)
-            style = r2.radio("Chart", ["Line", "Candle"], horizontal=True)
-            days = {"1M": 22, "3M": 66, "6M": 132, "1Y": 252}[rng]
-            hover = st.checkbox("Hover/tap se price dekhna hai (scroll atak sakta hai)")
-            cfg = {"displayModeBar": False, "scrollZoom": False} if hover else {"staticPlot": True}
-            st.plotly_chart(price_chart(daily, symbol, days, style),
-                            use_container_width=True, config=cfg)
+# ----------------- TAB 2: GOLD & COMMODITIES -----------------
+with tab_gold:
+    st.subheader("🪙 Gold & Precious Metals Radar")
+    g1, g2 = st.columns([1, 2])
+    
+    with g1:
+        g_etf_price, g_etf_delta = fetch_ticker_data("GOLDBEES.NS")
+        if g_etf_price:
+            st.metric("Gold BeES ETF Price (NSE)", f"₹{g_etf_price:.2f}", f"{g_etf_delta:.2f}%")
+        st.info("💡 **Gold Allocation:** Market volatility aur inflation se bachav ke liye standard investment rule ke mutabiq 10-15% Gold hold karna chahiye.")
 
-            # ---- DETAILS (collapsed, jise padhna ho wo khole) ----
-            lv = daily.iloc[-1]
-            hi52, lo52 = daily["High"].tail(252).max(), daily["Low"].tail(252).min()
-            with st.expander("🔢 Aur numbers (52W High/Low, RSI, ATR)"):
-                k1, k2 = st.columns(2)
-                k1.metric("52W High", f"{cur}{hi52:,.2f}", f"{(price / hi52 - 1) * 100:.1f}%",
-                          help="Pichle 1 saal ka sabse ucha price. % = abhi ke price se kitna neeche.")
-                k2.metric("52W Low", f"{cur}{lo52:,.2f}", f"{(price / lo52 - 1) * 100:+.1f}%",
-                          help="Pichle 1 saal ka sabse neecha price.")
-                k3, k4 = st.columns(2)
-                k3.metric("RSI (14)", f"{lv['RSI']:.1f}",
-                          help="30 se neeche = bohot gira hua (oversold). 70 se upar = bohot chadha hua (overbought).")
-                k4.metric("ATR", f"{cur}{lv['ATR']:.2f}",
-                          help="Ek din me price average kitna upar-neeche hota hai. Stop-loss set karne me kaam aata hai.")
+    with g2:
+        gold_df = yf.download("GOLDBEES.NS", period="1y", interval="1d")
+        if not gold_df.empty:
+            g_fig = go.Figure()
+            g_fig.add_trace(go.Scatter(
+                x=gold_df.index, y=gold_df['Close'],
+                mode='lines', line=dict(color='#eab308', width=2),
+                name="Gold BeES"
+            ))
+            g_fig.update_layout(
+                title="Gold BeES 1-Year Price Trend",
+                template="plotly_dark",
+                paper_bgcolor="#0b0f19",
+                plot_bgcolor="#111827",
+                height=320,
+                margin=dict(l=10, r=10, t=40, b=10)
+            )
+            st.plotly_chart(g_fig, use_container_width=True)
 
-            with st.expander("📖 Detail me padho"):
-                st.markdown(summary_hl(daily, sc, cur))
-                st.caption("Signals: " + " • ".join(sc["notes"]))
+# ----------------- TAB 3: MUTUAL FUNDS TRACKER -----------------
+with tab_mf:
+    st.subheader("📊 Mutual Funds & SIP Planning")
+    mf1, mf2 = st.columns([1, 1])
 
-            with st.expander("📚 Shabd samjho (SMA, RSI, MACD...)"):
-                st.markdown(
-                    "- **SMA (Moving Average):** pichhle X din ka average price. Price iske upar = tezi, neeche = mandi.\n"
-                    "- **SMA50 / SMA200:** 50 aur 200 din ka average. SMA200 lambe trend ki line hai.\n"
-                    "- **RSI:** 0 se 100 ka meter. 30 se neeche = bohot gira, 70 se upar = bohot chadha.\n"
-                    "- **MACD:** momentum batata hai. Signal line ke upar = tezi ka josh.\n"
-                    "- **ATR:** price ki daily uthal-puthal. Zyada ATR = zyada risk.\n"
-                    "- **Support:** wo level jahan se price pehle ghoom kar upar gaya.\n"
-                    "- **Resistance:** wo level jahan price pehle ruk kar neeche aaya.\n"
-                    "- **Stop-loss:** wo price jahan loss cut karke nikal jaate hain.")
+    with mf1:
+        st.markdown("#### Curated Funds List")
+        mf_table = pd.DataFrame({
+            "Scheme Name": [
+                "Parag Parikh Flexi Cap Fund",
+                "Mirae Asset Large & Midcap",
+                "Nippon India Small Cap Fund",
+                "UTI Nifty 50 Index Fund"
+            ],
+            "Category": ["Flexi Cap", "Large & Mid Cap", "Small Cap", "Index Fund"],
+            "Risk Profile": ["Moderate", "Moderately High", "Very High", "Low-Moderate"],
+            "3Y Return": ["18.2%", "21.5%", "26.4%", "14.8%"]
+        })
+        st.dataframe(mf_table, use_container_width=True, hide_index=True)
 
-            # ---- AI ----
-            if AI_OK:
-                st.subheader("🤖 AI Samjhaye (Hinglish)")
-                ctx = build_context(symbol, daily, sc, sel_name)
-                fund, news = get_fundamentals(symbol), get_news(symbol, sel_name)
-                st.caption(f"Data: Fundamentals {'✅' if fund else '❌'} • "
-                           f"News {'✅ ' + str(len(news)) if news else '❌'}")
-                st.session_state.setdefault("ai_out", {})
-                if st.button("AI se analysis karo"):
-                    with st.spinner("AI soch raha hai..."):
-                        st.session_state.ai_out[symbol] = ask_ai(
-                                         ctx, "Is stock ka simple analysis do.", fmt=True)
-                if symbol in st.session_state.ai_out:
-                    st.markdown(esc(st.session_state.ai_out[symbol]))
-                if news:
-                    with st.expander("📰 Latest news headlines"):
-                        for n_ in news:
-                            st.markdown(f"- {esc(n_)}")
+    with mf2:
+        st.markdown("#### 💰 Visual SIP Calculator")
+        sip_amount = st.slider("Monthly SIP Amount (₹)", 1000, 50000, 5000, step=1000)
+        expected_cagr = st.slider("Expected Annual Return (%)", 8, 25, 13)
+        time_period = st.slider("Investment Period (Years)", 1, 30, 10)
+        
+        months = time_period * 12
+        monthly_rate = (expected_cagr / 100) / 12
+        invested_amt = sip_amount * months
+        future_val = sip_amount * (((1 + monthly_rate) ** months - 1) / monthly_rate) * (1 + monthly_rate)
+        wealth_gain = future_val - invested_amt
+        
+        s1, s2 = st.columns(2)
+        s1.metric("Invested Capital", f"₹{invested_amt:,.0f}")
+        s2.metric("Total Future Value", f"₹{future_val:,.0f}", f"+₹{wealth_gain:,.0f}")
 
-                q = st.text_input(f"{symbol} ke baare me kuch bhi poocho", key=f"q_{symbol}")
-                if q:
-                    with st.spinner("AI soch raha hai..."):
-                        st.markdown(esc(ask_ai(ctx, q)))
-
-# ---------- TAB 2 ----------
-with tab2:
-    st.subheader("Nifty Screener")
-    c1, c2, c3 = st.columns(3)
-    rsi_min, rsi_max = c1.slider("RSI range", 0, 100, (0, 100))
-    verdict_f = c2.multiselect("Verdict", list(COLORS), default=["Strong Buy", "Buy"])
-    above200 = c3.checkbox("Sirf SMA200 ke upar")
-    universe = st.text_area("Stock list (comma separated)", ", ".join(NIFTY_50), height=100)
-
-    if st.button("🚀 Scan karo", type="primary"):
-        syms = [s.strip() for s in universe.split(",") if s.strip()]
-        rows, bar = [], st.progress(0.0)
-        for i, s in enumerate(syms, 1):
-            bar.progress(i / len(syms), text=f"{s} ({i}/{len(syms)})")
-            d = load(fix_symbol(s), "1d", "2y")
-            if d is None or len(d) < 210:
-                continue
-            d = add_indicators(d)
-            l, sc = d.iloc[-1], score(d)
-            rows.append({
-                "Stock": s, "Price": round(l["Close"], 2),
-                "1D %": round((l["Close"] / d["Close"].iloc[-2] - 1) * 100, 2),
-                "RSI": round(l["RSI"], 1), "Verdict": sc["verdict"], "Score": sc["score"],
-                "vs SMA200 %": round((l["Close"] / l["SMA200"] - 1) * 100, 1),
-                "52W High %": round((l["Close"] / d["High"].tail(252).max() - 1) * 100, 1),
-            })
-        bar.empty()
-        st.session_state.scan = pd.DataFrame(rows)
-
-    if "scan" in st.session_state and not st.session_state.scan.empty:
-        df = st.session_state.scan
-        df = df[df["RSI"].between(rsi_min, rsi_max)]
-        if verdict_f:
-            df = df[df["Verdict"].isin(verdict_f)]
-        if above200:
-            df = df[df["vs SMA200 %"] > 0]
-        st.write(f"**{len(df)} stocks mile**")
-        st.dataframe(df.sort_values("Score", ascending=False),
-                     use_container_width=True, hide_index=True)
-
-# ---------- TAB 3 ----------
-with tab3:
-    if not st.session_state.watchlist:
-        st.info("Watchlist khali hai.")
-    for s in list(st.session_state.watchlist):
-        d = load(s, "1d", "1y")
-        a, b, c = st.columns([2, 2, 1])
-        a.write(f"**{s}**")
-        if d is not None and len(d) > 2:
-            b.write(f"{currency(s)}{d['Close'].iloc[-1]:,.2f} "
-                    f"({(d['Close'].iloc[-1] / d['Close'].iloc[-2] - 1) * 100:+.2f}%)")
-        if c.button("❌", key=f"rm_{s}"):
-            st.session_state.watchlist.remove(s)
-            st.rerun()
-
-st.caption("Sirf educational use ke liye. Ye financial advice nahi hai.")
+st.markdown("<br><hr>", unsafe_allow_html=True)
+st.caption("⚠️ Disclaimer: Yeh app algorithmic analysis aur educational purposes ke liye hai. Yeh certified SEBI investment advice nahi hai.")
