@@ -344,7 +344,7 @@ with st.expander("🎨 Wallpaper / Theme"):
             else:
                 dim = None
 apply_wallpaper(bg, dim)
-
+st.markdown("[🏠 Market Dashboard kholo](/dashboard)")
 tab1, tab2, tab3 = st.tabs(["📈 Stock Analysis", "🔎 Screener", "⭐ Watchlist"])
 
 # ---------- TAB 1 ----------
