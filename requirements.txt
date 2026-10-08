@@ -1,9 +1,7 @@
 streamlit
-yfinance>=0.2.54
+yfinance
 pandas
-numpy
+pandas-ta
 plotly
+mftool
 google-genai
-pillow
-
-
